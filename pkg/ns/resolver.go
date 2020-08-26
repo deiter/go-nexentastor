@@ -82,44 +82,6 @@ func (r *Resolver) ResolveFromVg(path string) (ProviderInterface, error) {
 	return nil, nil
 }
 
-// IsCluster checks if nodes is a NS cluster
-// For now it simple checks if all nodes return at least one similar cluster name
-func (r *Resolver) IsCluster() (bool, error) {
-	l := r.Log.WithField("func", "IsCluster()")
-
-	if len(r.Nodes) < 2 {
-		return false, nil
-	}
-
-	names := map[string]int{
-		// "ClusterName": "FindOnNodeCount"
-	}
-
-	for _, node := range r.Nodes {
-		// get RSF cluster from each node
-		clusters, err := node.GetRSFClusters()
-		if err != nil {
-			return false, err
-		}
-		for _, cluster := range clusters {
-			if v, ok := names[cluster.Name]; ok {
-				names[cluster.Name] = v + 1
-			} else {
-				names[cluster.Name] = 1
-			}
-		}
-	}
-
-	for clusterName, findOnNodeCount := range names {
-		if findOnNodeCount == len(r.Nodes) {
-			l.Infof("all nodes belong to '%s' cluster", clusterName)
-			return true, nil
-		}
-	}
-
-	return false, nil
-}
-
 // ResolverArgs - params to create resolver instance from config
 type ResolverArgs struct {
 	Address  string

@@ -1,9 +1,10 @@
 package ns
 
 import (
-    "encoding/json"
+//    "encoding/base64"
+//    "encoding/json"
     "fmt"
-    "net/http"
+//    "net/http"
     "net/url"
     "strconv"
 )
@@ -12,85 +13,16 @@ import (
 // TODO change this limit base on specified NS version
 const nsFilesystemListLimit = 100
 
-// LogIn logs in to NexentaStor API and get auth token
-func (p *Provider) LogIn() error {
-    l := p.Log.WithField("func", "LogIn()")
-
-    data := nefAuthLoginRequest{
-        Username: p.Username,
-        Password: p.Password,
-    }
-
-    _, bodyBytes, err := p.RestClient.Send(http.MethodPost, "auth/login", data)
-    if err != nil {
-        // try to parse error from rest response
-        nefError := p.parseNefError(bodyBytes, "Login request")
-        if nefError != nil {
-            if IsAuthNefError(nefError) {
-                l.Errorf(
-                    "login to NexentaStor %s failed (username: '%s'), "+
-                        "please make sure to use correct address and password",
-                    p.Address,
-                    p.Username)
-            }
-            return nefError
-        }
-
-        return fmt.Errorf("Login request: failed, response: %s; error: %s", bodyBytes, err)
-    }
-
-    response := nefAuthLoginResponse{}
-    if err := json.Unmarshal(bodyBytes, &response); err != nil {
-        return fmt.Errorf("Login request: cannot unmarshal JSON from: '%s' to '%+v': %s", bodyBytes, response, err)
-    } else if response.Token == "" {
-        return fmt.Errorf("Login request: token not found in response: '%s'", bodyBytes)
-    }
-
-    p.RestClient.SetAuthToken(response.Token)
-    l.Debugf("login token has been updated")
-    return nil
-}
-
-// GetLicense returns NexentaStor license
-func (p *Provider) GetLicense() (license License, err error) {
-    err = p.sendRequestWithStruct(http.MethodGet, "/settings/license", nil, &license)
-    return license, err
-}
-
-// GetPools returns NexentaStor pools
-func (p *Provider) GetPools() ([]Pool, error) {
-    uri := p.RestClient.BuildURI("/storage/pools", map[string]string{
-        "fields": "poolName,health,status",
-    })
-
-    response := nefStoragePoolsResponse{}
-    err := p.sendRequestWithStruct(http.MethodGet, uri, nil, &response)
-    if err != nil {
-        return nil, err
-    }
-
-    return response.Data, nil
-}
-
 // GetFilesystemAvailableCapacity returns NexentaStor filesystem available size by its path
 func (p *Provider) GetFilesystemAvailableCapacity(path string) (int64, error) {
-    uri := p.RestClient.BuildURI("/storage/filesystems", map[string]string{
-        "path":   path,
-        "fields": "bytesAvailable",
-    })
-
-    response := nefStorageFilesystemsResponse{}
-    err := p.sendRequestWithStruct(http.MethodGet, uri, nil, &response)
+    data := [1]string{path}
+    response := Filesystem{}
+    err := p.sendRequestWithStruct("getShare", data, &response)
     if err != nil {
         return 0, err
     }
 
-    var availableSize int64
-    if len(response.Data) > 0 {
-        availableSize = int64(response.Data[0].BytesAvailable)
-    }
-
-    return availableSize, nil
+    return response.BytesAvailable, nil
 }
 
 // GetFilesystem returns NexentaStor filesystem by its path
@@ -98,23 +30,14 @@ func (p *Provider) GetFilesystem(path string) (filesystem Filesystem, err error)
     if path == "" {
         return filesystem, fmt.Errorf("Filesystem path is empty")
     }
-
-    uri := p.RestClient.BuildURI("/storage/filesystems", map[string]string{
-        "path":   path,
-        "fields": "path,mountPoint,bytesAvailable,bytesUsed,sharedOverNfs,sharedOverSmb",
-    })
-
-    response := nefStorageFilesystemsResponse{}
-    err = p.sendRequestWithStruct(http.MethodGet, uri, nil, &response)
+    data := [1]string{path}
+    response := Filesystem{}
+    err = p.sendRequestWithStruct("getShare", data, &response)
     if err != nil {
         return filesystem, err
     }
 
-    if len(response.Data) == 0 {
-        return filesystem, &NefError{Code: "ENOENT", Err: fmt.Errorf("Filesystem '%s' not found", path)}
-    }
-
-    return response.Data[0], nil
+    return response, nil
 }
 
 // GetVolumesWithStartingToken returns volumes by parent volumeGroup after specified starting token
@@ -183,6 +106,7 @@ func (p *Provider) GetVolumes(parent string) ([]Volume, error) {
     return volumes, nil
 }
 
+// zxxxxxx
 // GetFilesystems returns all NexentaStor filesystems by parent filesystem
 func (p *Provider) GetFilesystems(parent string) ([]Filesystem, error) {
     filesystems := []Filesystem{}
@@ -273,7 +197,7 @@ func (p *Provider) GetFilesystemsSlice(parent string, limit, offset int) ([]File
     })
 
     response := nefStorageFilesystemsResponse{}
-    err := p.sendRequestWithStruct(http.MethodGet, uri, nil, &response)
+    err := p.sendRequestWithStruct(uri, nil, &response)
     if err != nil {
         return nil, err
     }
@@ -311,7 +235,7 @@ func (p *Provider) GetVolumesSlice(parent string, limit, offset int) ([]Volume, 
     })
 
     response := nefStorageVolumesResponse{}
-    err := p.sendRequestWithStruct(http.MethodGet, uri, nil, &response)
+    err := p.sendRequestWithStruct(uri, nil, &response)
     if err != nil {
         return nil, err
     }
@@ -340,7 +264,7 @@ func (p *Provider) CreateFilesystem(params CreateFilesystemParams) error {
 
     //TODO consider to add option https://jira.nexenta.com/browse/NEX-17476?focusedCommentId=154590
 
-    return p.sendRequest(http.MethodPost, "/storage/filesystems", params)
+    return p.sendRequest("/storage/filesystems", params)
 }
 
 // UpdateFilesystemParams - params to update filesystem
@@ -356,7 +280,7 @@ func (p *Provider) UpdateFilesystem(path string, params UpdateFilesystemParams) 
     }
 
     uri :=  fmt.Sprintf("/storage/filesystems/%s", url.PathEscape(path))
-    return p.sendRequest(http.MethodPut, uri, params)
+    return p.sendRequest(uri, params)
 }
 
 // DestroyFilesystemParams - filesystem deletion parameters
@@ -484,7 +408,7 @@ func (p *Provider) destroyFilesystem(path string, destroySnapshots bool) error {
         },
     )
 
-    return p.sendRequest(http.MethodDelete, uri, nil)
+    return p.sendRequest(uri, nil)
 }
 
 // PromoteFilesystem promotes a cloned filesystem to be no longer dependent on its original snapshot
@@ -495,7 +419,7 @@ func (p *Provider) PromoteFilesystem(path string) error {
 
     uri := fmt.Sprintf("/storage/filesystems/%s/promote", url.PathEscape(path))
 
-    return p.sendRequest(http.MethodPost, uri, nil)
+    return p.sendRequest(uri, nil)
 }
 
 // CreateNfsShareParams - params to create NFS share
@@ -560,7 +484,7 @@ func (p *Provider) CreateNfsShare(params CreateNfsShareParams) error {
         },
     }
 
-    return p.sendRequest(http.MethodPost, "nas/nfs", data)
+    return p.sendRequest("nas/nfs", data)
 }
 
 // DeleteNfsShare destroys NFS chare by filesystem path
@@ -571,7 +495,7 @@ func (p *Provider) DeleteNfsShare(path string) error {
 
     uri := fmt.Sprintf("/nas/nfs/%s", url.PathEscape(path))
 
-    return p.sendRequest(http.MethodDelete, uri, nil)
+    return p.sendRequest(uri, nil)
 }
 
 // CreateSmbShareParams - params to create SMB share
@@ -592,7 +516,7 @@ func (p *Provider) CreateSmbShare(params CreateSmbShareParams) error {
         return fmt.Errorf("CreateSmbShareParams.Filesystem is required")
     }
 
-    return p.sendRequest(http.MethodPost, "nas/smb", params)
+    return p.sendRequest("nas/smb", params)
 }
 
 // GetSmbShareName returns share name for filesystem that shared over SMB
@@ -607,7 +531,7 @@ func (p *Provider) GetSmbShareName(path string) (string, error) {
     )
 
     response := nefNasSmbResponse{}
-    err := p.sendRequestWithStruct(http.MethodGet, uri, nil, &response)
+    err := p.sendRequestWithStruct(uri, nil, &response)
     if err != nil {
         return "", err
     }
@@ -623,7 +547,7 @@ func (p *Provider) DeleteSmbShare(path string) error {
 
     uri := fmt.Sprintf("/nas/smb/%s", url.PathEscape(path))
 
-    return p.sendRequest(http.MethodDelete, uri, nil)
+    return p.sendRequest(uri, nil)
 }
 
 // SetFilesystemACL sets filesystem ACL, so NFS share can allow user to write w/o checking UNIX user uid
@@ -651,7 +575,7 @@ func (p *Provider) SetFilesystemACL(path string, aclRuleSet ACLRuleSet) error {
         Permissions: permissions,
     }
 
-    return p.sendRequest(http.MethodPost, uri, data)
+    return p.sendRequest(uri, data)
 }
 
 // CreateSnapshotParams - params to create snapshot
@@ -666,7 +590,7 @@ func (p *Provider) CreateSnapshot(params CreateSnapshotParams) error {
         return fmt.Errorf("Parameter 'CreateSnapshotParams.Path' is required")
     }
 
-    return p.sendRequest(http.MethodPost, "/storage/snapshots", params)
+    return p.sendRequest("/storage/snapshots", params)
 }
 
 // GetSnapshot returns snapshot by its path
@@ -681,7 +605,7 @@ func (p *Provider) GetSnapshot(path string) (snapshot Snapshot, err error) {
         //TODO return "bytesReferenced" and check on volume creation
     })
 
-    err = p.sendRequestWithStruct(http.MethodGet, uri, nil, &snapshot)
+    err = p.sendRequestWithStruct(uri, nil, &snapshot)
 
     return snapshot, err
 }
@@ -699,7 +623,7 @@ func (p *Provider) GetSnapshots(volumePath string, recursive bool) ([]Snapshot, 
     })
 
     response := nefStorageSnapshotsResponse{}
-    err := p.sendRequestWithStruct(http.MethodGet, uri, nil, &response)
+    err := p.sendRequestWithStruct(uri, nil, &response)
     if err != nil {
         return []Snapshot{}, err
     }
@@ -715,7 +639,7 @@ func (p *Provider) DestroySnapshot(path string) error {
 
     uri := fmt.Sprintf("/storage/snapshots/%s", url.PathEscape(path))
 
-    return p.sendRequest(http.MethodDelete, uri, nil)
+    return p.sendRequest(uri, nil)
 }
 
 // CloneSnapshotParams - params to clone snapshot to filesystem
@@ -737,50 +661,7 @@ func (p *Provider) CloneSnapshot(path string, params CloneSnapshotParams) error 
 
     uri := fmt.Sprintf("/storage/snapshots/%s/clone", url.PathEscape(path))
 
-    return p.sendRequest(http.MethodPost, uri, params)
-}
-
-// GetRSFClusters returns RSF clusters from NS
-func (p *Provider) GetRSFClusters() ([]RSFCluster, error) {
-    uri := p.RestClient.BuildURI("/rsf/clusters", map[string]string{
-        "fields": "clusterName,nodes",
-    })
-
-    response := nefRsfClustersResponse{}
-    err := p.sendRequestWithStruct(http.MethodGet, uri, nil, &response)
-    if err != nil {
-        return nil, err
-    }
-
-    return response.Data, nil
-}
-
-// IsJobDone checks if job is done by jobId
-func (p *Provider) IsJobDone(jobID string) (bool, error) {
-    uri := fmt.Sprintf("/jobStatus/%s", jobID)
-
-    statusCode, bodyBytes, err := p.RestClient.Send(http.MethodGet, uri, nil)
-    if err != nil { // request failed
-        return false, err
-    } else if statusCode == http.StatusOK || statusCode == http.StatusCreated { // job is completed
-        return true, nil
-    } else if statusCode == http.StatusAccepted { // job is in progress (202)
-        return false, nil
-    }
-
-    // job is failed
-    nefError := p.parseNefError(bodyBytes, "Job was finished with error")
-    if nefError != nil {
-        err = nefError
-    } else {
-        err = fmt.Errorf(
-            "Job request returned %d code, but response body doesn't contain explanation: %s",
-            statusCode,
-            bodyBytes,
-        )
-    }
-
-    return false, err
+    return p.sendRequest(uri, params)
 }
 
 // GetVolume - returns NexentaStor volume properties
@@ -794,7 +675,7 @@ func (p *Provider) GetVolume(path string) (volume Volume, err error) {
     })
 
     response := nefStorageVolumesResponse{}
-    err = p.sendRequestWithStruct(http.MethodGet, uri, nil, &response)
+    err = p.sendRequestWithStruct(uri, nil, &response)
     if err != nil {
         return response.Data[0], err
     }
@@ -817,7 +698,7 @@ func (p *Provider) GetVolumeGroup(path string) (volumeGroup VolumeGroup,err erro
     })
 
     response := nefStorageVolumeGroupsResponse{}
-    err = p.sendRequestWithStruct(http.MethodGet, uri, nil, &response)
+    err = p.sendRequestWithStruct(uri, nil, &response)
     if err != nil {
         return volumeGroup, err
     }
@@ -843,7 +724,7 @@ func (p *Provider) CreateVolume(params CreateVolumeParams) error {
             "Parameters 'Volume.Path' is required, received %+v", params)
     }
 
-    return p.sendRequest(http.MethodPost, "/storage/volumes", params)
+    return p.sendRequest("/storage/volumes", params)
 }
 
 // UpdateVolumeParams - params to update volume
@@ -859,7 +740,7 @@ func (p *Provider) UpdateVolume(path string, params UpdateVolumeParams) error {
     }
 
     uri :=  fmt.Sprintf("/storage/volumes/%s", url.PathEscape(path))
-    return p.sendRequest(http.MethodPut, uri, params)
+    return p.sendRequest(uri, params)
 }
 
 // GetLunMapping returns NexentaStor lunmapping for a volume
@@ -872,7 +753,7 @@ func (p *Provider) GetLunMapping(path string) (lunMapping LunMapping, err error)
         "fields": "id,volume,targetGroup,hostGroup,lun",
     })
     response := nefLunMappingsResponse{}
-    err = p.sendRequestWithStruct(http.MethodGet, uri, nil, &response)
+    err = p.sendRequestWithStruct(uri, nil, &response)
     if err != nil {
         return lunMapping, err
     }
@@ -894,7 +775,7 @@ func (p *Provider) CreateISCSITarget (params CreateISCSITargetParams) error {
     if params.Name == "" {
         return fmt.Errorf("Parameters 'Name' and 'Portal' are required, received: %+v", params)
     }
-    err := p.sendRequest(http.MethodPost, "/san/iscsi/targets", params)
+    err := p.sendRequest("/san/iscsi/targets", params)
     if !IsAlreadyExistNefError(err) {
         return err
     }
@@ -918,13 +799,13 @@ func (p *Provider) CreateUpdateTargetGroup(params CreateTargetGroupParams) error
         return fmt.Errorf(
             "Parameters 'Name' and 'Members' are required, received: %+v", params)
     }
-    err := p.sendRequest(http.MethodPost, "/san/targetgroups", params)
+    err := p.sendRequest("/san/targetgroups", params)
     if err != nil {
         if !IsAlreadyExistNefError(err) {
             return err
         } else {
             uri :=  fmt.Sprintf("/san/targetgroups/%s", url.PathEscape(params.Name))
-            err = p.sendRequest(http.MethodPut, uri, UpdateTargetGroupParams{
+            err = p.sendRequest(uri, UpdateTargetGroupParams{
                 Members: params.Members,
             })
             if err != nil {
@@ -948,7 +829,7 @@ func (p *Provider) CreateLunMapping(params CreateLunMappingParams) error {
         return fmt.Errorf(
             "Parameters 'HostGroup', 'Target' and 'TargetGroup' are required, received: %+v", params)
     }
-    err := p.sendRequest(http.MethodPost, "/san/lunMappings", params)
+    err := p.sendRequest("/san/lunMappings", params)
     if !IsAlreadyExistNefError(err) {
         return err
     }
@@ -967,7 +848,7 @@ func (p *Provider) DestroyLunMapping(id string) error {
 
     uri := fmt.Sprintf("/san/lunMappings/%s", id)
 
-    return p.sendRequest(http.MethodDelete, uri, nil)
+    return p.sendRequest(uri, nil)
 }
 
 func (p *Provider) DestroyVolume(path string, params DestroyVolumeParams) error {
@@ -990,5 +871,5 @@ func (p *Provider) destroyVolume(path string, destroySnapshots bool) error {
         },
     )
 
-    return p.sendRequest(http.MethodDelete, uri, nil)
+    return p.sendRequest(uri, nil)
 }

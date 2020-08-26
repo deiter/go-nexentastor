@@ -20,7 +20,8 @@ const requestTimeout = 30 * time.Second
 // Client - request client for any REST API
 type Client struct {
 	address    string
-	authToken  string
+    username   string
+    password   string
 	httpClient *http.Client
 	log        *logrus.Entry
 
@@ -31,8 +32,7 @@ type Client struct {
 // ClientInterface - request client interface
 type ClientInterface interface {
 	BuildURI(uri string, params map[string]string) string
-	Send(method, path string, data interface{}) (int, []byte, error)
-	SetAuthToken(token string)
+	Send(path string, data interface{}) (int, []byte, error)
 }
 
 // BuildURI builds request URI using [path?params...] format
@@ -56,12 +56,12 @@ func (c *Client) BuildURI(uri string, params map[string]string) string {
 
 // Send sends request to REST server
 // data interface{} - request payload, any interface for json.Marshal()
-func (c *Client) Send(method, path string, data interface{}) (int, []byte, error) {
+func (c *Client) Send(path string, data interface{}) (int, []byte, error) {
 	c.mux.Lock()
 	c.requestID++
 	l := c.log.WithFields(logrus.Fields{
 		"func":  "Send()",
-		"req":   fmt.Sprintf("%s %s", method, path),
+		"req":   path,
 		"reqID": c.requestID,
 	})
 	c.mux.Unlock()
@@ -81,16 +81,14 @@ func (c *Client) Send(method, path string, data interface{}) (int, []byte, error
 		l.Debugf("data: %+v", data) //TODO hide passwords
 	}
 
-	req, err := http.NewRequest(method, uri, jsonDataReader)
+	req, err := http.NewRequest(http.MethodPost, uri, jsonDataReader)
 	if err != nil {
 		l.Errorf("request creation error: %s", err)
 		return 0, nil, err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if len(c.authToken) != 0 {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.authToken))
-	}
+    req.SetBasicAuth(c.username, c.password)
 
 	res, err := c.httpClient.Do(req)
 	if err != nil {
@@ -105,21 +103,18 @@ func (c *Client) Send(method, path string, data interface{}) (int, []byte, error
 	// validate response body
 	bodyBytes, err := ioutil.ReadAll(res.Body)
 	if err != nil {
-		err = fmt.Errorf("Cannot read body of request '%s %s': '%s'", method, uri, err)
+		err = fmt.Errorf("Cannot read body of request '%s': '%s'", uri, err)
 		return res.StatusCode, nil, err
 	}
 
 	return res.StatusCode, bodyBytes, err
 }
 
-// SetAuthToken sets Bearer auth token for all requests
-func (c *Client) SetAuthToken(token string) {
-	c.authToken = token
-}
-
 // ClientArgs - params to create Client instance
 type ClientArgs struct {
 	Address string
+    Username string
+    Password string
 	Log     *logrus.Entry
 
 	// InsecureSkipVerify controls whether a client verifies the server's certificate chain and host name.
@@ -145,6 +140,8 @@ func NewClient(args ClientArgs) ClientInterface {
 	l.Debugf("created for '%s'", args.Address)
 	return &Client{
 		address:    args.Address,
+        username:   args.Username,
+        password:   args.Password,
 		httpClient: httpClient,
 		log:        l,
 		requestID:  0,

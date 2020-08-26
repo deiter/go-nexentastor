@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
+//	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -19,15 +19,6 @@ const (
 
 // ProviderInterface - NexentaStor provider interface
 type ProviderInterface interface {
-	// system
-	LogIn() error
-	IsJobDone(jobID string) (bool, error)
-	GetLicense() (License, error)
-	GetRSFClusters() ([]RSFCluster, error)
-
-	// pools
-	GetPools() ([]Pool, error)
-
 	// filesystems
 	CreateFilesystem(params CreateFilesystemParams) error
 	UpdateFilesystem(path string, params UpdateFilesystemParams) error
@@ -124,24 +115,23 @@ func (p *Provider) parseNefError(bodyBytes []byte, prefix string) error {
 	return nil
 }
 
-func (p *Provider) sendRequestWithStruct(method, path string, data, response interface{}) error {
-	bodyBytes, err := p.doAuthRequest(method, path, data)
+func (p *Provider) sendRequestWithStruct(path string, data, response interface{}) error {
+	bodyBytes, err := p.doAuthRequest(path, data)
 	if err != nil {
 		return err
 	}
 
 	if len(bodyBytes) == 0 {
-		return fmt.Errorf("Request '%s %s' responded with empty body", method, path)
+		return fmt.Errorf("Request '%s' responded with empty body", path)
 	} else if !json.Valid(bodyBytes) {
-		return fmt.Errorf("Request '%s %s' responded with invalid JSON: '%s'", method, path, bodyBytes)
+		return fmt.Errorf("Request '%s' responded with invalid JSON: '%s'", path, bodyBytes)
 	}
 
 	if response != nil {
 		err := json.Unmarshal(bodyBytes, response)
 		if err != nil {
 			return fmt.Errorf(
-				"Request '%s %s': cannot unmarshal JSON from: '%s' to '%+v': %s",
-				method,
+				"Request '%s': cannot unmarshal JSON from: '%s' to '%+v': %s",
 				path,
 				bodyBytes,
 				response,
@@ -153,15 +143,15 @@ func (p *Provider) sendRequestWithStruct(method, path string, data, response int
 	return nil
 }
 
-func (p *Provider) sendRequest(method, path string, data interface{}) error {
-	_, err := p.doAuthRequest(method, path, data)
+func (p *Provider) sendRequest(path string, data interface{}) error {
+	_, err := p.doAuthRequest(path, data)
 	return err
 }
 
-func (p *Provider) doAuthRequest(method, path string, data interface{}) ([]byte, error) {
+func (p *Provider) doAuthRequest(path string, data interface{}) ([]byte, error) {
 	l := p.Log.WithField("func", "doAuthRequest()")
 
-	statusCode, bodyBytes, err := p.RestClient.Send(method, path, data)
+	statusCode, bodyBytes, err := p.RestClient.Send(path, data)
 	if err != nil {
 		return bodyBytes, err
 	}
@@ -173,13 +163,8 @@ func (p *Provider) doAuthRequest(method, path string, data interface{}) ([]byte,
 		// do login call if used is not authorized in api
 		l.Debugf("log in as '%s'...", p.Username)
 
-		err = p.LogIn()
-		if err != nil {
-			return nil, err
-		}
-
 		// send original request again
-		statusCode, bodyBytes, err = p.RestClient.Send(method, path, data)
+		statusCode, bodyBytes, err = p.RestClient.Send(path, data)
 		if err != nil {
 			return bodyBytes, err
 		}
@@ -187,16 +172,11 @@ func (p *Provider) doAuthRequest(method, path string, data interface{}) ([]byte,
 
 	if statusCode == http.StatusAccepted {
 		// this is an async job
-		var href string
-		href, err = p.parseAsyncJobHref(bodyBytes)
-		if err != nil {
-			return bodyBytes, err
-		}
-
-		err = p.waitForAsyncJob(strings.TrimPrefix(href, "/jobStatus/"))
-		if err != nil {
-			l.Debugf("waitForAsyncJob() error: %s", err)
-		}
+		//var href string
+		//href, err = p.parseAsyncJobHref(bodyBytes)
+		//if err != nil {
+		//	return bodyBytes, err
+		//}
 	} else if statusCode >= 300 {
 		nefError := p.parseNefError(bodyBytes, "request error")
 		if nefError != nil {
@@ -226,36 +206,6 @@ func (p *Provider) parseAsyncJobHref(bodyBytes []byte) (string, error) {
 	}
 
 	return "", fmt.Errorf("Request return an async job, but response doesn't contain any links: %v", bodyBytes)
-}
-
-// waitForAsyncJob - keep asking for job status while it's not completed, return an error if timeout exceeded
-func (p *Provider) waitForAsyncJob(jobID string) (err error) {
-	l := p.Log.WithField("job", jobID)
-
-	timer := time.NewTimer(0)
-	timeout := time.After(checkJobStatusTimeout)
-	startTime := time.Now()
-
-	for {
-		select {
-		case <-timer.C:
-			jobDone, err := p.IsJobDone(jobID)
-			if err != nil { // request failed
-				return err
-			} else if jobDone { // job is completed
-				return nil
-			} else {
-				waitingTimeSeconds := time.Since(startTime).Seconds()
-				if waitingTimeSeconds >= checkJobStatusInterval.Seconds() {
-					l.Warnf("waiting job for %.0fs...", waitingTimeSeconds)
-				}
-				timer = time.NewTimer(checkJobStatusInterval)
-			}
-		case <-timeout:
-			timer.Stop()
-			return fmt.Errorf("Checking job status timeout exceeded (%ds)", checkJobStatusTimeout)
-		}
-	}
 }
 
 // ProviderArgs - params to create Provider instance

@@ -24,12 +24,15 @@ type License struct {
 
 // Filesystem - NexentaStor filesystem
 type Filesystem struct {
-	Path           string `json:"path"`
-	MountPoint     string `json:"mountPoint"`
-	SharedOverNfs  bool   `json:"sharedOverNfs"`
-	SharedOverSmb  bool   `json:"sharedOverSmb"`
-	BytesAvailable int64  `json:"bytesAvailable"`
-	BytesUsed      int64  `json:"bytesUsed"`
+    PoolName       string `share:"poolName"`
+    ProjectName    string `share:"projectName"`
+    Name           string `share:"name"`
+    Path           string `share_v1:"datasetPath" share_v2:"zfsDataSetName"`
+    MountPoint     string `share_v1:"mountpoint" share_v2:"mountPoint"`
+    SharedOverNfs  bool   `share_v2:"sharenfs,omitempty"`
+    SharedOverSmb  bool   `share_v2:"sharesmb,omitempty"`
+    BytesAvailable int64  `share:"availableSize"`
+    BytesUsed      int64  `share:"totalSize"`
 }
 
 // Volume - NexentaStor volume
