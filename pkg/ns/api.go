@@ -2,42 +2,100 @@ package ns
 
 import (
 //    "encoding/base64"
-//    "encoding/json"
+    "encoding/json"
     "fmt"
 //    "net/http"
     "net/url"
+    "os"
     "strconv"
+    "strings"
 )
 
 // NexentaStor filesystem list limit (<=)
 // TODO change this limit base on specified NS version
 const nsFilesystemListLimit = 100
 
+func (p *Provider) Share_v1toFilesystem(share Share_v1) (filesystem Filesystem) {
+    filesystem.Path = share.Path
+    filesystem.MountPoint = share.MountPoint
+    filesystem.BytesAvailable = share.AvailableSize
+    filesystem.BytesUsed = share.TotalSize
+    filesystem.SharedOverNfs = false
+    filesystem.SharedOverSmb = false
+    return filesystem
+}
+
+func (p *Provider) Share_v2toFilesystem(share Share_v2) (filesystem Filesystem) {
+    filesystem.Path = share.Path
+    filesystem.MountPoint = share.MountPoint
+    filesystem.BytesAvailable = share.AvailableSize
+    filesystem.BytesUsed = share.TotalSize
+
+    if share.ShareNfs != "off" {
+        filesystem.SharedOverNfs = true
+    } else {
+        filesystem.SharedOverNfs = false
+    }
+
+    if share.ShareSmb != "off" {
+        filesystem.SharedOverSmb = true
+    } else {
+        filesystem.SharedOverSmb = false
+    }
+
+    return filesystem
+}
+
+
+type ZebiPool struct {
+    Name string `json:"name"`
+    AvailableSize int64 `json:"availableSize"`
+    TotalSize int64 `json:"totalSize"`
+}
+
+func (p *Provider) GetPools() ([]Pool, error) {
+    zebiPools := []ZebiPool{}
+    err := p.sendRequestWithStruct("listPools", nil, &zebiPools)
+    if err != nil {
+        return nil, err
+    }
+
+    pools := []Pool{}
+    for _, zebiPool := range zebiPools {
+        pool := Pool{
+            Name: zebiPool.Name,
+        }
+        pools = append(pools, pool)
+    }
+
+    return pools, nil
+}
+
 // GetFilesystemAvailableCapacity returns NexentaStor filesystem available size by its path
 func (p *Provider) GetFilesystemAvailableCapacity(path string) (int64, error) {
-    data := [1]string{path}
-    response := Filesystem{}
-    err := p.sendRequestWithStruct("getShare", data, &response)
+    filesystem, err := p.GetFilesystem(path)
     if err != nil {
         return 0, err
     }
 
-    return response.BytesAvailable, nil
+    return filesystem.BytesAvailable, nil
 }
 
-// GetFilesystem returns NexentaStor filesystem by its path
 func (p *Provider) GetFilesystem(path string) (filesystem Filesystem, err error) {
     if path == "" {
         return filesystem, fmt.Errorf("Filesystem path is empty")
     }
+
     data := [1]string{path}
-    response := Filesystem{}
-    err = p.sendRequestWithStruct("getShare", data, &response)
+    share := Share_v2{}
+    err = p.sendRequestWithStruct("getShare", data, &share)
     if err != nil {
         return filesystem, err
     }
 
-    return response, nil
+    filesystem = p.Share_v2toFilesystem(share)
+
+    return filesystem, nil
 }
 
 // GetVolumesWithStartingToken returns volumes by parent volumeGroup after specified starting token
@@ -106,7 +164,6 @@ func (p *Provider) GetVolumes(parent string) ([]Volume, error) {
     return volumes, nil
 }
 
-// zxxxxxx
 // GetFilesystems returns all NexentaStor filesystems by parent filesystem
 func (p *Provider) GetFilesystems(parent string) ([]Filesystem, error) {
     filesystems := []Filesystem{}
@@ -173,9 +230,20 @@ func (p *Provider) GetFilesystemsWithStartingToken(parent string, startingToken 
     return filesystems, nextToken, nil
 }
 
+type ListSharesParams struct {
+    Pool string
+    Project string
+    Local bool
+}
+
+func (p ListSharesParams) MarshalJSON() ([]byte, error) {
+    list := []interface{}{p.Pool, p.Project, p.Local}
+    return json.Marshal(list)
+}
+
 // GetFilesystemsSlice returns a slice of filesystems by parent filesystem with specified limit and offset
 // offset - the first record number of collection, that would be included in result
-func (p *Provider) GetFilesystemsSlice(parent string, limit, offset int) ([]Filesystem, error) {
+func (p *Provider) GetFilesystemsSlice(parent string, limit, offset int) (filesystems []Filesystem, err error) {
     if limit <= 0 || limit >= nsFilesystemListLimit {
         return nil, fmt.Errorf(
             "GetFilesystemsSlice(): parameter 'limit' must be greater that 0 and less than %d, got: %d",
@@ -189,23 +257,28 @@ func (p *Provider) GetFilesystemsSlice(parent string, limit, offset int) ([]File
         )
     }
 
-    uri := p.RestClient.BuildURI("/storage/filesystems", map[string]string{
-        "parent": parent,
-        "limit":  fmt.Sprint(limit + 1), // the result includes parent itself
-        "offset": fmt.Sprint(offset),
-        "fields": "path,mountPoint,bytesAvailable,bytesUsed,sharedOverNfs,sharedOverSmb",
-    })
+    path := strings.Split(parent, string(os.PathSeparator))
 
-    response := nefStorageFilesystemsResponse{}
-    err := p.sendRequestWithStruct(uri, nil, &response)
+    if len(path) != 3 {
+        return nil, fmt.Errorf("Parameter 'parent' is invalid: %s", parent)
+    }
+
+    sharesParams := ListSharesParams {
+        Pool: path[0],
+        Project: path[2],
+        Local: true,
+    }
+
+    shares := []Share_v1{}
+    err = p.sendRequestWithStruct("listShares", sharesParams, &shares)
     if err != nil {
         return nil, err
     }
 
-    filesystems := []Filesystem{}
-    for _, fs := range response.Data {
-        if fs.Path != parent { // exclude parent filesystem from the list
-            filesystems = append(filesystems, fs)
+    for count, share := range shares {
+        if (count >= offset && count <= (offset + limit)) {
+            filesystem := p.Share_v1toFilesystem(share)
+            filesystems = append(filesystems, filesystem)
         }
     }
 
@@ -256,15 +329,63 @@ type CreateFilesystemParams struct {
     ReferencedQuotaSize int64 `json:"referencedQuotaSize,omitempty"`
 }
 
-// CreateFilesystem creates filesystem by path
+type ShareOptions struct {
+    BlockSize   string `json:"blockSize,omitempty"`
+    Quota       int64  `json:"quota,omitempty"`
+    Reservation int64  `json:"reservation,omitempty"`
+}
+
+type SharePermissions struct {
+    SharePermissionEnum int `json:"sharePermissionEnum"`
+    SharePermissionMode int `json:"sharePermissionMode"`
+}
+
+type CreateShareParams struct {
+    Pool string
+    Project string
+    Name string
+    Options ShareOptions
+    Permissions []SharePermissions
+}
+
+func (p CreateShareParams) MarshalJSON() ([]byte, error) {
+    list := []interface{}{p.Pool, p.Project, p.Name, p.Options, p.Permissions}
+    return json.Marshal(list)
+}
+
 func (p *Provider) CreateFilesystem(params CreateFilesystemParams) error {
     if params.Path == "" {
         return fmt.Errorf("Parameter 'CreateFilesystemParams.Path' is required")
     }
 
-    //TODO consider to add option https://jira.nexenta.com/browse/NEX-17476?focusedCommentId=154590
+    shareOptions := ShareOptions{}
 
-    return p.sendRequest("/storage/filesystems", params)
+    if params.ReferencedQuotaSize != 0 {
+        shareOptions.Quota = params.ReferencedQuotaSize
+    }
+
+    sharePermissions := []SharePermissions {
+        {
+            SharePermissionEnum: 0,
+            SharePermissionMode: 0,
+        },
+    }
+
+    path := strings.Split(params.Path, string(os.PathSeparator))
+
+    if len(path) != 4 {
+        return fmt.Errorf("Parameter 'CreateFilesystemParams.Path' is invalid")
+    }
+
+    shareParams := CreateShareParams{
+        Pool:             path[0],
+        Project:          path[2],
+        Name:             path[3],
+        Options:          shareOptions,
+        Permissions:      sharePermissions,
+    }
+
+    return p.sendRequest("createShare", shareParams)
 }
 
 // UpdateFilesystemParams - params to update filesystem
@@ -273,14 +394,35 @@ type UpdateFilesystemParams struct {
     ReferencedQuotaSize int64 `json:"referencedQuotaSize,omitempty"`
 }
 
+type UpdateShareParams struct {
+    Path string
+    Options ShareOptions
+}
+
+func (p UpdateShareParams) MarshalJSON() ([]byte, error) {
+    list := []interface{}{p.Path, p.Options}
+    return json.Marshal(list)
+}
+
 // UpdateFilesystem updates filesystem by path
 func (p *Provider) UpdateFilesystem(path string, params UpdateFilesystemParams) error {
     if path == "" {
         return fmt.Errorf("Parameter 'path' is required")
     }
 
-    uri :=  fmt.Sprintf("/storage/filesystems/%s", url.PathEscape(path))
-    return p.sendRequest(uri, params)
+    shareOptions := ShareOptions{}
+    if params.ReferencedQuotaSize == 0 {
+        shareOptions.Quota = -1
+    } else {
+        shareOptions.Quota = params.ReferencedQuotaSize
+    }
+
+    shareParams := UpdateShareParams{
+        Path: path,
+        Options: shareOptions,
+    }
+
+    return p.sendRequest("modifyShareProperties", shareParams)
 }
 
 // DestroyFilesystemParams - filesystem deletion parameters
@@ -314,112 +456,29 @@ type DestroyFilesystemParams struct {
     PromoteMostRecentCloneIfExists bool
 }
 
+type DeleteShareParams struct {
+    Path string
+    Recursive bool
+    ErrorIfNotFound bool
+    Promote bool
+}
+
+func (p DeleteShareParams) MarshalJSON() ([]byte, error) {
+    list := []interface{}{p.Path, p.Recursive, p.ErrorIfNotFound, p.Promote}
+    return json.Marshal(list)
+}
+
 // DestroyFilesystem destroys filesystem on NS, may destroy snapshots and promote clones (see DestroyFilesystemParams)
 // Path format: 'pool/dataset/filesystem'
 func (p *Provider) DestroyFilesystem(path string, params DestroyFilesystemParams) error {
-    err := p.destroyFilesystem(path, params.DestroySnapshots)
-    if err == nil {
-        return nil
-    } else if !params.PromoteMostRecentCloneIfExists || !IsAlreadyExistNefError(err) {
-        return err
+    shareParams := DeleteShareParams{
+        Path: path,
+        Recursive: params.DestroySnapshots,
+        ErrorIfNotFound: false,
+        Promote: params.PromoteMostRecentCloneIfExists,
     }
 
-    // If here then filesystem deletion request has failed because
-    // the filesystem has dependent clones (EEXIST error code), trying
-    // to promote the most recent clone to make the filesystem independent:
-
-    maxAttemptCount := 3
-    var mostRecentError error
-
-    for i := 0; i < maxAttemptCount; i++ {
-        mostRecentError = nil
-
-        snapshots, err := p.GetSnapshots(path, true)
-        if err != nil {
-            mostRecentError = fmt.Errorf("failed to get snapshot list: %s", err)
-            break
-        }
-
-        var maxCreationTxg int
-        var mostRecentClone string
-        for _, s := range snapshots {
-            // to get "clones" and "creationTxg" fields that are not presented in the list response
-            snapshot, err := p.GetSnapshot(s.Path)
-            if err != nil {
-                mostRecentError = fmt.Errorf("failed to get '%s' snapshost's info: %s", s.Path, err)
-                break
-            }
-            creationTxg, err := strconv.Atoi(snapshot.CreationTxg)
-            if err != nil {
-                mostRecentError = fmt.Errorf(
-                    "snapshot '%s': failed to convert 'creationTxg' value '%s' to integer: %s",
-                    s.Path,
-                    snapshot.CreationTxg,
-                    err,
-                )
-                break
-            } else if len(snapshot.Clones) > 0 && creationTxg > maxCreationTxg {
-                mostRecentClone = snapshot.Clones[0]
-                maxCreationTxg = creationTxg
-            }
-        }
-        if mostRecentError != nil {
-            // Failed to determine the most recent clone.
-            // Give another chance (or exit if max attempt count exceeded) if any error happened
-            // while getting each snaphost's information. For example, the snapshot got deleted
-            // right after snapshot list request, but before requesting its information.
-            continue
-        }
-
-        if mostRecentClone != "" {
-            err := p.PromoteFilesystem(mostRecentClone)
-            if err != nil {
-                mostRecentError = fmt.Errorf("failed to promote clone '%s': %s", mostRecentClone, err)
-                continue
-            }
-        }
-
-        mostRecentError = p.destroyFilesystem(path, params.DestroySnapshots)
-        if mostRecentError == nil {
-            return nil
-        } else if !IsAlreadyExistNefError(mostRecentError) { // if EEXIST code - filesystem still has dependent clones
-            break
-        }
-    }
-
-    // if not a NefError, wrap it into an explanation
-    if !IsNefError(mostRecentError) {
-        return fmt.Errorf("Failed to delete filesystem '%s': %s", path, mostRecentError)
-    }
-
-    return mostRecentError
-}
-
-func (p *Provider) destroyFilesystem(path string, destroySnapshots bool) error {
-    if path == "" {
-        return fmt.Errorf("Filesystem path is required")
-    }
-
-    uri := p.RestClient.BuildURI(
-        fmt.Sprintf("/storage/filesystems/%s", url.PathEscape(path)),
-        map[string]string{
-            "force":     "true",
-            "snapshots": strconv.FormatBool(destroySnapshots),
-        },
-    )
-
-    return p.sendRequest(uri, nil)
-}
-
-// PromoteFilesystem promotes a cloned filesystem to be no longer dependent on its original snapshot
-func (p *Provider) PromoteFilesystem(path string) error {
-    if path == "" {
-        return fmt.Errorf("Filesystem path is required")
-    }
-
-    uri := fmt.Sprintf("/storage/filesystems/%s/promote", url.PathEscape(path))
-
-    return p.sendRequest(uri, nil)
+    return p.sendRequest("deleteShare", shareParams)
 }
 
 // CreateNfsShareParams - params to create NFS share
@@ -428,6 +487,23 @@ type CreateNfsShareParams struct {
     Filesystem          string              `json:"filesystem"`
     ReadWriteList       []NfsRuleList       `json:"readWriteList"`
     ReadOnlyList        []NfsRuleList       `json:"readOnlyList"`
+}
+
+type NfsAcl struct {
+    Type string `json:"hostType"`
+    Host string `json:"host"`
+    AccessMode string `json:"accessMode"`
+    RootAccess bool `json:"rootAccessForNFS"`
+}
+
+type SetNfsParams struct {
+    Path string
+    Acl []NfsAcl
+}
+
+func (p SetNfsParams) MarshalJSON() ([]byte, error) {
+    list := []interface{}{p.Path, p.Acl}
+    return json.Marshal(list)
 }
 
 // CreateNfsShare creates NFS share on specified filesystem
@@ -440,51 +516,51 @@ func (p *Provider) CreateNfsShare(params CreateNfsShareParams) error {
         return fmt.Errorf("CreateNfsShareParams.Filesystem is required")
     }
 
-    defaultEtype := "fqdn"
-    if len(params.ReadWriteList) == 0 {
-        if len(params.ReadOnlyList) == 0 {
-            params.ReadOnlyList = []NfsRuleList{
-                {
-                    Entity: "none",
-                    Etype: defaultEtype,
-                },
-            }
-            params.ReadWriteList = []NfsRuleList{
-                {
-                    Entity: "*",
-                    Etype: defaultEtype,
-                },
-            }
+    nfsacls := []NfsAcl{}
+    for _, rw := range params.ReadWriteList {
+        nfsacl := NfsAcl{
+            AccessMode: "rw",
+            RootAccess: true,
+        }
+        if rw.Etype == "fqdn" || rw.Etype == "domain" {
+            nfsacl.Type = "FQDN"
+            nfsacl.Host = rw.Entity
         } else {
-            params.ReadWriteList = []NfsRuleList{
-                {
-                    Entity: "none",
-                    Etype: defaultEtype,
-                },
+            nfsacl.Type = "IP"
+            if rw.Mask > 0 {
+                nfsacl.Host = fmt.Sprintf("%s/%d", rw.Entity, rw.Mask)
+            } else {
+                nfsacl.Host = rw.Entity
             }
         }
-    } else if len(params.ReadOnlyList) == 0 {
-        params.ReadOnlyList = []NfsRuleList{
-            {
-                Entity: "none",
-                Etype: defaultEtype,
-            },
+        nfsacls = append(nfsacls, nfsacl)
+    }
+
+    for _, ro := range params.ReadOnlyList {
+        nfsacl := NfsAcl{
+            AccessMode: "ro",
+            RootAccess: true,
         }
+        if ro.Etype == "fqdn" || ro.Etype == "domain" {
+            nfsacl.Type = "FQDN"
+            nfsacl.Host = ro.Entity
+        } else {
+            nfsacl.Type = "IP"
+            if ro.Mask > 0 {
+                nfsacl.Host = fmt.Sprintf("%s/%d", ro.Entity, ro.Mask)
+            } else {
+                nfsacl.Host = ro.Entity
+            }
+        }
+        nfsacls = append(nfsacls, nfsacl)
     }
 
-    data := nefNasNfsRequest{
-        Filesystem: params.Filesystem,
-        Anon:       "root",
-        SecurityContexts: []nefNasNfsRequestSecurityContext{
-            {
-                SecurityModes: []string{"sys"},
-                ReadWriteList: params.ReadWriteList,
-                ReadOnlyList: params.ReadOnlyList,
-            },
-        },
+    nfsparams := SetNfsParams {
+        Path: params.Filesystem,
+        Acl: nfsacls,
     }
 
-    return p.sendRequest("nas/nfs", data)
+    return p.sendRequest("setNFSNetworkACLsOnShare", nfsparams)
 }
 
 // DeleteNfsShare destroys NFS chare by filesystem path
@@ -493,9 +569,9 @@ func (p *Provider) DeleteNfsShare(path string) error {
         return fmt.Errorf("Filesystem path is empty")
     }
 
-    uri := fmt.Sprintf("/nas/nfs/%s", url.PathEscape(path))
+    params := [1]string{path}
 
-    return p.sendRequest(uri, nil)
+    return p.sendRequest("removeAllNFSNetworkACLsOnShare", params)
 }
 
 // CreateSmbShareParams - params to create SMB share

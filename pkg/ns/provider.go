@@ -19,6 +19,9 @@ const (
 
 // ProviderInterface - NexentaStor provider interface
 type ProviderInterface interface {
+    // pools
+    GetPools() ([]Pool, error)
+
 	// filesystems
 	CreateFilesystem(params CreateFilesystemParams) error
 	UpdateFilesystem(path string, params UpdateFilesystemParams) error
@@ -45,7 +48,6 @@ type ProviderInterface interface {
 	GetSnapshot(path string) (Snapshot, error)
 	GetSnapshots(volumePath string, recursive bool) ([]Snapshot, error)
 	CloneSnapshot(path string, params CloneSnapshotParams) error
-	PromoteFilesystem(path string) error
 
 	// volumes
 	CreateVolume(params CreateVolumeParams) error
@@ -82,27 +84,21 @@ func (p *Provider) parseNefError(bodyBytes []byte, prefix string) error {
 	var restErrorCode string
 
 	response := struct {
-		Name    string `json:"name"`
-		Message string `json:"message"`
-		Errors  string `json:"errors"`
-		Code    string `json:"code"`
+		Code         string `json:"code"`
+		Details      string `json:"details"`
+		Message      string `json:"message"`
 	}{}
 
 	if err := json.Unmarshal(bodyBytes, &response); err != nil {
 		return nil
 	}
 
-	if response.Name != "" {
-		restErrorMessage = fmt.Sprint(response.Name)
-	}
-	if response.Message != "" {
-		restErrorMessage = fmt.Sprintf("%s: %s", restErrorMessage, response.Message)
-	}
-	if response.Errors != "" {
-		restErrorMessage = fmt.Sprintf("%s, errors: [%s]", restErrorMessage, response.Errors)
-	}
 	if response.Code != "" {
 		restErrorCode = response.Code
+	}
+
+	if response.Message != "" {
+		restErrorMessage = response.Message
 	}
 
 	if restErrorMessage != "" {
@@ -232,6 +228,8 @@ func NewProvider(args ProviderArgs) (ProviderInterface, error) {
 
 	restClient := rest.NewClient(rest.ClientArgs{
 		Address:            args.Address,
+        Username:   args.Username,
+        Password:   args.Password,
 		Log:                l,
 		InsecureSkipVerify: args.InsecureSkipVerify,
 	})

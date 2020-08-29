@@ -28,6 +28,14 @@ func GetNefErrorCode(err error) string {
 	return ""
 }
 
+func NotFound(err error) bool {
+    return GetNefErrorCode(err) == "EZEBI_RESOURCE_NOT_FOUND"
+}
+
+func ErrorZebiResourceNotFound(err error) bool {
+    return GetNefErrorCode(err) == "EZEBI_RESOURCE_NOT_FOUND"
+}
+
 // IsAlreadyExistNefError treats an error as NefError and returns true if its code is "EEXIST"
 func IsAlreadyExistNefError(err error) bool {
 	return GetNefErrorCode(err) == "EEXIST"

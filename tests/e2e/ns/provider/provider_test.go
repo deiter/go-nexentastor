@@ -17,14 +17,14 @@ import (
 // defaults
 const (
 	defaultUsername       = "admin"
-	defaultPassword       = "Nexenta@1"
-	defaultPoolName       = "testPool"
-	defaultDatasetName    = "testDataset"
-	defaultFilesystemName = "testFilesystem"
+	defaultPassword       = "t"
+	defaultPoolName       = "pool-a"
+	defaultDatasetName    = "nfs-proj"
+	defaultFilesystemName = "test123"
 )
 
 // count of concurrent REST calls to create filesystems on NS
-const concurrentProcesses = 20
+const concurrentProcesses = 1
 
 type config struct {
 	address      string
@@ -70,8 +70,8 @@ func TestMain(m *testing.M) {
 		username:     *username,
 		password:     *password,
 		pool:         *pool,
-		dataset:      fmt.Sprintf("%s/%s", *pool, *dataset),
-		filesystem:   fmt.Sprintf("%s/%s/%s", *pool, *dataset, *filesystem),
+		dataset:      fmt.Sprintf("%s/Local/%s", *pool, *dataset),
+		filesystem:   fmt.Sprintf("%s/Local/%s/%s", *pool, *dataset, *filesystem),
 		cluster:      *cluster,
 		smbShareName: "testShareName",
 		snapshotName: "snap-test",
@@ -97,17 +97,6 @@ func TestProvider_NewProvider(t *testing.T) {
 		t.Error(err)
 	}
 
-	t.Run("GetLicense()", func(tt *testing.T) {
-		license, err := nsp.GetLicense()
-		if err != nil {
-			t.Error(err)
-		} else if !license.Valid {
-			t.Errorf("License %+v is not valid, on NS %s", license, c.address)
-		} else if license.Expires[0:2] != "20" {
-			tt.Errorf("License expires date should starts with '20': %+v, on NS %s", license, c.address)
-		}
-	})
-
 	t.Run("GetPools()", func(t *testing.T) {
 		pools, err := nsp.GetPools()
 		if err != nil {
@@ -118,33 +107,33 @@ func TestProvider_NewProvider(t *testing.T) {
 	})
 
 	t.Run("GetFilesystems()", func(t *testing.T) {
-		filesystems, err := nsp.GetFilesystems(c.pool)
+		filesystems, err := nsp.GetFilesystems(c.dataset)
 		if err != nil {
 			t.Error(err)
 		} else if filesystemArrayContains(filesystems, c.pool) {
 			t.Errorf("Pool %s should not be in the results", c.pool)
-		} else if !filesystemArrayContains(filesystems, c.dataset) {
-			t.Errorf("Dataset %s doesn't exist", c.dataset)
+		} else if !filesystemArrayContains(filesystems, c.filesystem) {
+			t.Errorf("Dataset %s doesn't exist", c.filesystem)
 		}
 	})
 
 	t.Run("GetFilesystem() exists", func(t *testing.T) {
-		filesystem, err := nsp.GetFilesystem(c.dataset)
+		filesystem, err := nsp.GetFilesystem(c.filesystem)
 		if err != nil {
 			t.Error(err)
-		} else if filesystem.Path != c.dataset {
-			t.Errorf("No %s filesystem in the result", c.dataset)
+		} else if filesystem.Path != c.filesystem {
+			t.Errorf("No %s filesystem in the result", c.filesystem)
 		}
 	})
 
 	t.Run("GetFilesystem() not exists", func(t *testing.T) {
-		nonExistingName := "NON_EXISTING"
+		nonExistingName := fmt.Sprintf("%s-%s", c.filesystem, "non-existing")
 		filesystem, err := nsp.GetFilesystem(nonExistingName)
-		if err != nil && !strings.Contains(err.Error(), "not found") {
-			t.Error(err)
-		} else if filesystem.Path != "" {
-			t.Errorf("Filesystem %s should not exist, but found in the result: %v", nonExistingName, filesystem)
-		}
+        if err != nil && !ns.ErrorZebiResourceNotFound(err) {
+            t.Error(err)
+        } else if filesystem.Path != "" {
+            t.Errorf("Filesystem %s should not exist, but found in the result: %v", nonExistingName, filesystem)
+        }
 	})
 
 	t.Run("CreateFilesystem()", func(t *testing.T) {
@@ -447,15 +436,6 @@ func TestProvider_NewProvider(t *testing.T) {
 		}
 	})
 
-	t.Run("PromoteFilesystem()", func(t *testing.T) {
-		err := nsp.PromoteFilesystem(testSnapshotCloneTargetPath)
-		if err != nil {
-			t.Error(err)
-		}
-
-		//TODO check that snapshots have been actually "migrated" to the promoted filesystem
-	})
-
 	t.Run("DestroySnapshot()", func(t *testing.T) {
 		nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{
 			DestroySnapshots:               true,
@@ -623,29 +603,6 @@ func TestProvider_NewProvider(t *testing.T) {
 				referencedQuotaSize,
 				availableCapacity,
 				c.address,
-			)
-		}
-	})
-
-	t.Run("GetRSFClusters()", func(t *testing.T) {
-		expectedToBeACluster := c.cluster
-
-		clusters, err := nsp.GetRSFClusters()
-		if err != nil {
-			t.Error(err)
-			return
-		}
-
-		if expectedToBeACluster && len(clusters) == 0 {
-			t.Errorf(
-				"NS %s expected to be in a cluster (--cluster=true flag) but got no clusters from the API",
-				c.address,
-			)
-		} else if !expectedToBeACluster && len(clusters) > 0 {
-			t.Errorf(
-				"NS %s expected not to be in a cluster (--cluster=false flag) but got clusters from the API: %+v",
-				c.address,
-				clusters,
 			)
 		}
 	})
@@ -887,31 +844,10 @@ func createFilesystemChildren(nsp ns.ProviderInterface, parent string, count int
 	return runConcurrentJobs("create filesystem", jobs)
 }
 
+
+//xxx
 func destroyFilesystemWithDependents(nsp ns.ProviderInterface, filesystem string) error {
-	children, err := nsp.GetFilesystems(filesystem)
-	if err != nil {
-		return fmt.Errorf("destroyFilesystemWithDependents(%s): failed to get children: %v", filesystem, err)
-	}
-
-	if len(children) > 0 {
-		jobs := make([]func() error, len(children))
-		for i, c := range children {
-			c := c
-			jobs[i] = func() error {
-				return destroyFilesystemWithDependents(nsp, c.Path)
-			}
-		}
-		err := runConcurrentJobs("delete filesystem", jobs)
-		if err != nil {
-			return fmt.Errorf(
-				"destroyFilesystemWithDependents(%s): failed to remove child filesystems: %s",
-				filesystem,
-				err,
-			)
-		}
-	}
-
-	err = nsp.DestroyFilesystem(filesystem, ns.DestroyFilesystemParams{DestroySnapshots: true})
+	err := nsp.DestroyFilesystem(filesystem, ns.DestroyFilesystemParams{DestroySnapshots: true})
 	if err != nil {
 		return fmt.Errorf("destroyFilesystemWithDependents(%s): failed to destroy filesystem: %v", filesystem, err)
 	}
@@ -980,7 +916,9 @@ func filesystemArrayContains(array []ns.Filesystem, value string) bool {
 	for _, v := range array {
 		if v.Path == value {
 			return true
-		}
+		} else {
+            fmt.Println("v.Path", v.Path, " != ", value)
+        }
 	}
 	return false
 }

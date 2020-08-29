@@ -66,9 +66,8 @@ func (c *Client) Send(path string, data interface{}) (int, []byte, error) {
 	})
 	c.mux.Unlock()
 
-	uri := fmt.Sprintf("%s/%s", c.address, path)
-
-	l.Debug("send request")
+	uri := fmt.Sprintf("%s/zebi/api/v2/%s", c.address, path)
+	l.Debugf("url: %+v", uri)
 
 	// send request data as json
 	var jsonDataReader io.Reader
@@ -78,7 +77,7 @@ func (c *Client) Send(path string, data interface{}) (int, []byte, error) {
 			return 0, nil, err
 		}
 		jsonDataReader = strings.NewReader(string(jsonData))
-		l.Debugf("data: %+v", data) //TODO hide passwords
+		l.Debugf("json: %+v", string(jsonData))
 	}
 
 	req, err := http.NewRequest(http.MethodPost, uri, jsonDataReader)
@@ -106,6 +105,8 @@ func (c *Client) Send(path string, data interface{}) (int, []byte, error) {
 		err = fmt.Errorf("Cannot read body of request '%s': '%s'", uri, err)
 		return res.StatusCode, nil, err
 	}
+
+    l.Debugf("response body: %s", bodyBytes)
 
 	return res.StatusCode, bodyBytes, err
 }

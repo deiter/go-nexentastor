@@ -24,15 +24,35 @@ type License struct {
 
 // Filesystem - NexentaStor filesystem
 type Filesystem struct {
-    PoolName       string `share:"poolName"`
-    ProjectName    string `share:"projectName"`
-    Name           string `share:"name"`
-    Path           string `share_v1:"datasetPath" share_v2:"zfsDataSetName"`
-    MountPoint     string `share_v1:"mountpoint" share_v2:"mountPoint"`
-    SharedOverNfs  bool   `share_v2:"sharenfs,omitempty"`
-    SharedOverSmb  bool   `share_v2:"sharesmb,omitempty"`
-    BytesAvailable int64  `share:"availableSize"`
-    BytesUsed      int64  `share:"totalSize"`
+       Path           string `json:"path"`
+       MountPoint     string `json:"mountPoint"`
+       SharedOverNfs  bool   `json:"sharedOverNfs"`
+       SharedOverSmb  bool   `json:"sharedOverSmb"`
+       BytesAvailable int64  `json:"bytesAvailable"`
+       BytesUsed      int64  `json:"bytesUsed"`
+}
+
+// Share - InteliFlash share
+type Share_v1 struct {
+    PoolName       string `json:"poolName"`
+    ProjectName    string `json:"projectName"`
+    Name           string `json:"name"`
+    Path           string `json:"datasetPath"`
+    MountPoint     string `json:"mountpoint"`
+    AvailableSize  int64  `json:"availableSize"`
+    TotalSize      int64  `json:"totalSize"`
+}
+
+type Share_v2 struct {
+    PoolName       string `json:"poolName"`
+    ProjectName    string `json:"projectName"`
+    Name           string `json:"name"`
+    Path           string `json:"zfsDataSetName"`
+    MountPoint     string `json:"mountPoint"`
+    ShareNfs       string `json:"sharenfs"`
+    ShareSmb       string `json:"sharesmb"`
+    AvailableSize  int64  `json:"availableSize"`
+    TotalSize      int64  `json:"totalSize"`
 }
 
 // Volume - NexentaStor volume
