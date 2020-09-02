@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-//	"strings"
+	//	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -19,8 +19,13 @@ const (
 
 // ProviderInterface - NexentaStor provider interface
 type ProviderInterface interface {
-    // pools
-    GetPools() ([]Pool, error)
+	// pools
+	GetPools() ([]Pool, error)
+
+	// projects
+	GetProject(path string) (Project, error)
+	CreateProject(path string) error
+	DeleteProject(path string) error
 
 	// filesystems
 	CreateFilesystem(params CreateFilesystemParams) error
@@ -29,6 +34,7 @@ type ProviderInterface interface {
 	SetFilesystemACL(path string, aclRuleSet ACLRuleSet) error
 	GetFilesystem(path string) (Filesystem, error)
 	GetFilesystemAvailableCapacity(path string) (int64, error)
+	GetReferencedQuotaSize(path string) (int64, error)
 	GetFilesystems(parent string) ([]Filesystem, error)
 	GetFilesystemsWithStartingToken(parent string, startingToken string, limit int) ([]Filesystem, string, error)
 	GetFilesystemsSlice(parent string, limit, offset int) ([]Filesystem, error)
@@ -84,9 +90,9 @@ func (p *Provider) parseNefError(bodyBytes []byte, prefix string) error {
 	var restErrorCode string
 
 	response := struct {
-		Code         string `json:"code"`
-		Details      string `json:"details"`
-		Message      string `json:"message"`
+		Code    string `json:"code"`
+		Details string `json:"details"`
+		Message string `json:"message"`
 	}{}
 
 	if err := json.Unmarshal(bodyBytes, &response); err != nil {
@@ -228,8 +234,8 @@ func NewProvider(args ProviderArgs) (ProviderInterface, error) {
 
 	restClient := rest.NewClient(rest.ClientArgs{
 		Address:            args.Address,
-        Username:   args.Username,
-        Password:   args.Password,
+		Username:           args.Username,
+		Password:           args.Password,
 		Log:                l,
 		InsecureSkipVerify: args.InsecureSkipVerify,
 	})

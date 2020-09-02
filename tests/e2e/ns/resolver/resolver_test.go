@@ -12,20 +12,20 @@ import (
 )
 
 const (
-	defaultUsername       = "admin"
-	defaultPassword       = "Nexenta@1"
-	defaultPoolName       = "testPool"
-	defaultDatasetName    = "testDataset"
-	defaultFilesystemName = "testFilesystem"
+	defaultUsername    = "admin"
+	defaultPassword    = "t"
+	defaultPoolName    = "pool-a"
+	defaultProjectName = "csi"
+	defaultFolderName  = "folder"
 )
 
 type config struct {
-	address    string
-	username   string
-	password   string
-	pool       string
-	dataset    string
-	filesystem string
+	address  string
+	username string
+	password string
+	pool     string
+	project  string
+	folder   string
 }
 
 var c *config
@@ -42,13 +42,13 @@ func filesystemArrayContains(array []ns.Filesystem, value string) bool {
 
 func TestMain(m *testing.M) {
 	var (
-		address    = flag.String("address", "", "NS API [schema://host:port,...]")
-		username   = flag.String("username", defaultUsername, "overwrite NS API username from config")
-		password   = flag.String("password", defaultPassword, "overwrite NS API password from config")
-		pool       = flag.String("pool", defaultPoolName, "pool on NS")
-		dataset    = flag.String("dataset", defaultDatasetName, "dataset on NS")
-		filesystem = flag.String("filesystem", defaultFilesystemName, "filesystem on NS")
-		log        = flag.Bool("log", false, "show logs")
+		address  = flag.String("address", "", "NS API [schema://host:port,...]")
+		username = flag.String("username", defaultUsername, "overwrite NS API username from config")
+		password = flag.String("password", defaultPassword, "overwrite NS API password from config")
+		pool     = flag.String("pool", defaultPoolName, "pool on NS")
+		project  = flag.String("project", defaultProjectName, "project on NS")
+		folder   = flag.String("folder", defaultFolderName, "folder on NS")
+		log      = flag.Bool("log", false, "show logs")
 	)
 
 	flag.Parse()
@@ -64,12 +64,12 @@ func TestMain(m *testing.M) {
 	}
 
 	c = &config{
-		address:    *address,
-		username:   *username,
-		password:   *password,
-		pool:       *pool,
-		dataset:    fmt.Sprintf("%s/%s", *pool, *dataset),
-		filesystem: fmt.Sprintf("%s/%s/%s", *pool, *dataset, *filesystem),
+		address:  *address,
+		username: *username,
+		password: *password,
+		pool:     *pool,
+		project:  fmt.Sprintf("%s/Local/%s", *pool, *project),
+		folder:   fmt.Sprintf("%s/Local/%s/%s", *pool, *project, *folder),
 	}
 
 	os.Exit(m.Run())
@@ -91,7 +91,23 @@ func TestResolver_NewResolverMulti(t *testing.T) {
 	}
 
 	t.Run("Resolve() should return NS with requested dataset", func(t *testing.T) {
-		nsProvider, err := nsr.Resolve(c.dataset)
+		//err = ns.CreateProject(c.project)
+		//if err != nil {
+		//	t.Error(err)
+		//	return
+		//}
+
+		//parameters := ns.CreateFilesystemParams {
+		//	Path: c.folder,
+		//}
+
+		//err = nsProvider.CreateFilesystem(parameters)
+		//if err != nil {
+		//	t.Error(err)
+		//	return
+		//}
+
+		nsProvider, err := nsr.Resolve(c.project)
 		if err != nil {
 			t.Error(err)
 			return
@@ -100,12 +116,12 @@ func TestResolver_NewResolverMulti(t *testing.T) {
 			return
 		}
 
-		filesystems, err := nsProvider.GetFilesystems(c.pool)
+		filesystems, err := nsProvider.GetFilesystems(c.project)
 		if err != nil {
 			t.Errorf("NS Error: %s", err)
 			return
-		} else if !filesystemArrayContains(filesystems, c.dataset) {
-			t.Errorf("Returned NS (%s) doesn't contain dataset: %s", nsProvider, c.dataset)
+		} else if !filesystemArrayContains(filesystems, c.folder) {
+			t.Errorf("Returned NS (%s) doesn't contain dataset: %s", nsProvider, c.folder)
 			return
 		}
 	})
@@ -115,17 +131,6 @@ func TestResolver_NewResolverMulti(t *testing.T) {
 		if err == nil {
 			t.Errorf("Resolver return NS for non-existing datastore: %s", nsProvider)
 			return
-		}
-	})
-
-	t.Run("IsCluster()", func(t *testing.T) {
-		expectedIsCluster := len(nsr.Nodes) > 1
-
-		isCluster, err := nsr.IsCluster()
-		if err != nil {
-			t.Error(err)
-		} else if isCluster != expectedIsCluster {
-			t.Errorf("expected to be '%t' but got '%t' for '%+v' NS", expectedIsCluster, isCluster, nsr)
 		}
 	})
 }

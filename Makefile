@@ -20,7 +20,7 @@ GIT_BRANCH = $(shell git rev-parse --abbrev-ref HEAD | sed -e "s/.*\\///")
 all: test
 
 .PHONY: test
-test: test-unit test-e2e-ns-single test-e2e-ns-cluster
+test: test-unit test-e2e-ns-single
 .PHONY: test-container
 test-container: \
 	test-unit-container \
@@ -38,7 +38,7 @@ test-unit-container:
 
 .PHONY: test-e2e-ns-single
 test-e2e-ns-single: check-env-TEST_NS_SINGLE
-	go test ./tests/e2e/ns/provider/provider_test.go -v -failfast --log --address="${TEST_NS_SINGLE}"
+	go test ./tests/e2e/ns/provider/provider_test.go -v -failfast --log --address="${TEST_NS_SINGLE}" -timeout 30m
 	go test ./tests/e2e/ns/resolver/resolver_test.go -v -failfast --log --address="${TEST_NS_SINGLE}"
 .PHONY: test-e2e-ns-single-container
 test-e2e-ns-single-container: check-env-TEST_NS_SINGLE
@@ -47,16 +47,6 @@ test-e2e-ns-single-container: check-env-TEST_NS_SINGLE
 		-e NOCOLORS=${NOCOLORS} -e TEST_NS_SINGLE=${TEST_NS_SINGLE} \
 		${DOCKER_IMAGE_TESTS} test-e2e-ns-single
 
-.PHONY: test-e2e-ns-cluster
-test-e2e-ns-cluster: check-env-TEST_NS_HA_1 check-env-TEST_NS_HA_2
-	go test ./tests/e2e/ns/provider/provider_test.go -v -failfast --address="${TEST_NS_HA_1}" --cluster=true
-	go test ./tests/e2e/ns/resolver/resolver_test.go -v -failfast --address="${TEST_NS_HA_1},${TEST_NS_HA_2}"
-.PHONY: test-e2e-ns-cluster-container
-test-e2e-ns-cluster-container: check-env-TEST_NS_HA_1 check-env-TEST_NS_HA_2
-	docker build -f ${DOCKER_FILE_TESTS} -t ${DOCKER_IMAGE_TESTS} .
-	docker run -i --rm -v ${HOME}/.ssh:/root/.ssh:ro \
-		-e NOCOLORS=${NOCOLORS} -e TEST_NS_HA_1=${TEST_NS_HA_1} -e TEST_NS_HA_2=${TEST_NS_HA_2} \
-		${DOCKER_IMAGE_TESTS} test-e2e-ns-cluster
 
 .PHONY: check-env-TEST_NS_SINGLE
 check-env-TEST_NS_SINGLE:

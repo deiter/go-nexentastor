@@ -24,40 +24,49 @@ type License struct {
 
 // Filesystem - NexentaStor filesystem
 type Filesystem struct {
-       Path           string `json:"path"`
-       MountPoint     string `json:"mountPoint"`
-       SharedOverNfs  bool   `json:"sharedOverNfs"`
-       SharedOverSmb  bool   `json:"sharedOverSmb"`
-       BytesAvailable int64  `json:"bytesAvailable"`
-       BytesUsed      int64  `json:"bytesUsed"`
+	Path           string `json:"path"`
+	MountPoint     string `json:"mountPoint"`
+	SharedOverNfs  bool   `json:"sharedOverNfs"`
+	SharedOverSmb  bool   `json:"sharedOverSmb"`
+	BytesAvailable int64  `json:"bytesAvailable"`
+	BytesUsed      int64  `json:"bytesUsed"`
+	QuotaSize      int64  `json:"quotaSize"`
+}
+
+type Project struct {
+	Pool string `json:"poolName"`
+	Name string `json:"projectName"`
 }
 
 // Share - InteliFlash share
 type Share_v1 struct {
-    PoolName       string `json:"poolName"`
-    ProjectName    string `json:"projectName"`
-    Name           string `json:"name"`
-    Path           string `json:"datasetPath"`
-    MountPoint     string `json:"mountpoint"`
-    AvailableSize  int64  `json:"availableSize"`
-    TotalSize      int64  `json:"totalSize"`
+	PoolName      string `json:"poolName"`
+	ProjectName   string `json:"projectName"`
+	Name          string `json:"name"`
+	Path          string `json:"datasetPath,omitempty"`
+	MountPoint    string `json:"mountpoint,omitempty"`
+	AvailableSize int64  `json:"availableSize,omitempty"`
+	TotalSize     int64  `json:"totalSize,omitempty"`
+	Local         bool   `json:"local,omitempty"`
 }
 
 type Share_v2 struct {
-    PoolName       string `json:"poolName"`
-    ProjectName    string `json:"projectName"`
-    Name           string `json:"name"`
-    Path           string `json:"zfsDataSetName"`
-    MountPoint     string `json:"mountPoint"`
-    ShareNfs       string `json:"sharenfs"`
-    ShareSmb       string `json:"sharesmb"`
-    AvailableSize  int64  `json:"availableSize"`
-    TotalSize      int64  `json:"totalSize"`
+	PoolName      string `json:"poolName"`
+	ProjectName   string `json:"projectName"`
+	Name          string `json:"name"`
+	Path          string `json:"zfsDataSetName"`
+	MountPoint    string `json:"mountPoint"`
+	ShareName     string `json:"cifsDisplayName"`
+	ShareNfs      string `json:"sharenfs"`
+	ShareSmb      string `json:"sharesmb"`
+	AvailableSize int64  `json:"availableSize"`
+	TotalSize     int64  `json:"totalSize"`
+	QuotaSize     int64  `json:"quotaInByte"`
 }
 
 // Volume - NexentaStor volume
 type Volume struct {
-	Path 		string `json:"path"`
+	Path           string `json:"path"`
 	BytesAvailable int64  `json:"bytesAvailable"`
 	BytesUsed      int64  `json:"bytesUsed"`
 	VolumeSize     int64  `json:"volumeSize"`
@@ -65,18 +74,18 @@ type Volume struct {
 
 // VolumeGroup - NexentaStor volumeGroup
 type VolumeGroup struct {
-    Path           string `json:"path"`
-    BytesAvailable int64  `json:"bytesAvailable"`
-    BytesUsed      int64  `json:"bytesUsed"`
+	Path           string `json:"path"`
+	BytesAvailable int64  `json:"bytesAvailable"`
+	BytesUsed      int64  `json:"bytesUsed"`
 }
 
 // LunMapping - NexentaStor lunmapping
 type LunMapping struct {
-	Id			string `json:"id"`
+	Id          string `json:"id"`
 	Volume      string `json:"volume"`
 	TargetGroup string `json:"targetGroup"`
 	HostGroup   string `json:"hostGroup"`
-	Lun 		int    `json:"lun"`
+	Lun         int    `json:"lun"`
 }
 
 func (fs *Filesystem) String() string {
@@ -87,11 +96,6 @@ func (fs *Filesystem) String() string {
 // Converts '/pool/dataset/fs' to 'pool_dataset_fs'
 func (fs *Filesystem) GetDefaultSmbShareName() string {
 	return strings.Replace(strings.TrimPrefix(fs.Path, "/"), "/", "_", -1)
-}
-
-// GetReferencedQuotaSize - get total referenced quota size
-func (fs *Filesystem) GetReferencedQuotaSize() int64 {
-	return fs.BytesAvailable + fs.BytesUsed
 }
 
 // Snapshot - NexentaStor snapshot
@@ -138,15 +142,15 @@ type nefStorageFilesystemsResponse struct {
 }
 
 type nefStorageVolumesResponse struct {
-    Data []Volume `json:"data"`
+	Data []Volume `json:"data"`
 }
 
 type nefStorageVolumeGroupsResponse struct {
-    Data []VolumeGroup `json:"data"`
+	Data []VolumeGroup `json:"data"`
 }
 
 type nefLunMappingsResponse struct {
-	Data[]LunMapping `json:"data"`
+	Data []LunMapping `json:"data"`
 }
 
 type nefStorageSnapshotsResponse struct {
@@ -159,20 +163,20 @@ type nefNasNfsRequest struct {
 	SecurityContexts []nefNasNfsRequestSecurityContext `json:"securityContexts"`
 }
 type nefNasNfsRequestSecurityContext struct {
-	SecurityModes []string 							`json:"securityModes"`
-	ReadWriteList []NfsRuleList						`json:"readWriteList"`
-	ReadOnlyList  []NfsRuleList						`json:"readOnlyList"`
+	SecurityModes []string      `json:"securityModes"`
+	ReadWriteList []NfsRuleList `json:"readWriteList"`
+	ReadOnlyList  []NfsRuleList `json:"readOnlyList"`
 }
 
 type NfsRuleList struct {
-	Etype 	string 		`json:"etype"`
-	Entity 	string 		`json:"entity"`
-	Mask	int 		`json:"mask"`
+	Etype  string `json:"etype"`
+	Entity string `json:"entity"`
+	Mask   int    `json:"mask"`
 }
 
 type Portal struct {
 	Address string `json:"address"`
-	Port 	int    `json:"port"`
+	Port    int    `json:"port"`
 }
 
 type nefNasSmbResponse struct {

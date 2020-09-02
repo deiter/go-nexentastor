@@ -25,7 +25,7 @@ func (r *Resolver) Resolve(path string) (ProviderInterface, error) {
 	var nefError error
 	var resolvedNS ProviderInterface
 	for _, ns := range r.Nodes {
-		_, err := ns.GetFilesystem(path)
+		_, err := ns.GetProject(path)
 		if err != nil {
 			nefError = err
 		} else {

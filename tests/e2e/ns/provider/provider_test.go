@@ -3,11 +3,13 @@ package provider_test
 import (
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sirupsen/logrus"
 
@@ -16,11 +18,12 @@ import (
 
 // defaults
 const (
-	defaultUsername       = "admin"
-	defaultPassword       = "t"
-	defaultPoolName       = "pool-a"
-	defaultDatasetName    = "nfs-proj"
-	defaultFilesystemName = "test123"
+	defaultUsername     = "admin"
+	defaultPassword     = "t"
+	defaultPoolName     = "pool-a"
+	defaultProjectName  = "csi"
+	defaultFolderName   = "folder"
+	defaultSnapshotName = "snapshot"
 )
 
 // count of concurrent REST calls to create filesystems on NS
@@ -30,11 +33,14 @@ type config struct {
 	address      string
 	username     string
 	password     string
-	pool         string
-	dataset      string
-	filesystem   string
+	poolName     string
+	projectName  string
+	projectPath  string
+	folderName   string
+	folderPath   string
 	smbShareName string
 	snapshotName string
+	snapshotPath string
 	cluster      bool
 }
 
@@ -43,14 +49,15 @@ var l *logrus.Entry
 
 func TestMain(m *testing.M) {
 	var (
-		address    = flag.String("address", "", "NS API [schema://host:port,...]")
-		username   = flag.String("username", defaultUsername, "overwrite NS API username from config")
-		password   = flag.String("password", defaultPassword, "overwrite NS API password from config")
-		pool       = flag.String("pool", defaultPoolName, "pool on NS")
-		dataset    = flag.String("dataset", defaultDatasetName, "dataset on NS")
-		filesystem = flag.String("filesystem", defaultFilesystemName, "filesystem on NS")
-		cluster    = flag.Bool("cluster", false, "this is a NS cluster")
-		log        = flag.Bool("log", false, "show logs")
+		address      = flag.String("address", "", "NS API [schema://host:port,...]")
+		username     = flag.String("username", defaultUsername, "overwrite NS API username from config")
+		password     = flag.String("password", defaultPassword, "overwrite NS API password from config")
+		poolName     = flag.String("pool_name", defaultPoolName, "pool on NS")
+		projectName  = flag.String("projectname", defaultProjectName, "Project name")
+		folderName   = flag.String("foldername", defaultFolderName, "folder name")
+		snapshotName = flag.String("snapshotname", defaultSnapshotName, "snapshot name")
+		cluster      = flag.Bool("cluster", false, "this is a NS cluster")
+		log          = flag.Bool("log", false, "show logs")
 	)
 
 	flag.Parse()
@@ -69,12 +76,15 @@ func TestMain(m *testing.M) {
 		address:      *address,
 		username:     *username,
 		password:     *password,
-		pool:         *pool,
-		dataset:      fmt.Sprintf("%s/Local/%s", *pool, *dataset),
-		filesystem:   fmt.Sprintf("%s/Local/%s/%s", *pool, *dataset, *filesystem),
+		poolName:     *poolName,
+		projectName:  *projectName,
+		projectPath:  fmt.Sprintf("%s/Local/%s", *poolName, *projectName),
+		folderName:   *folderName,
+		folderPath:   fmt.Sprintf("%s/Local/%s/%s", *poolName, *projectName, *folderName),
 		cluster:      *cluster,
 		smbShareName: "testShareName",
-		snapshotName: "snap-test",
+		snapshotName: *snapshotName,
+		snapshotPath: fmt.Sprintf("%s/Local/%s/%s@%s", *poolName, *projectName, *folderName, *snapshotName),
 	}
 
 	os.Exit(m.Run())
@@ -83,8 +93,8 @@ func TestMain(m *testing.M) {
 func TestProvider_NewProvider(t *testing.T) {
 	t.Logf("Using config:\n---\n%+v\n---", c)
 
-	testSnapshotPath := fmt.Sprintf("%s@%s", c.filesystem, c.snapshotName)
-	testSnapshotCloneTargetPath := fmt.Sprintf("%s/csiDriverFsCloned", c.dataset)
+	testSnapshotPath := fmt.Sprintf("%s@%s", c.folderPath, c.snapshotName)
+	testSnapshotCloneTargetPath := fmt.Sprintf("%s/csiDriverFsCloned", c.projectPath)
 
 	nsp, err := ns.NewProvider(ns.ProviderArgs{
 		Address:            c.address,
@@ -101,76 +111,84 @@ func TestProvider_NewProvider(t *testing.T) {
 		pools, err := nsp.GetPools()
 		if err != nil {
 			t.Error(err)
-		} else if !poolArrayContains(pools, c.pool) {
-			t.Errorf("Pool %s doesn't exist on NS %s", c.pool, c.address)
-		}
-	})
-
-	t.Run("GetFilesystems()", func(t *testing.T) {
-		filesystems, err := nsp.GetFilesystems(c.dataset)
-		if err != nil {
-			t.Error(err)
-		} else if filesystemArrayContains(filesystems, c.pool) {
-			t.Errorf("Pool %s should not be in the results", c.pool)
-		} else if !filesystemArrayContains(filesystems, c.filesystem) {
-			t.Errorf("Dataset %s doesn't exist", c.filesystem)
-		}
-	})
-
-	t.Run("GetFilesystem() exists", func(t *testing.T) {
-		filesystem, err := nsp.GetFilesystem(c.filesystem)
-		if err != nil {
-			t.Error(err)
-		} else if filesystem.Path != c.filesystem {
-			t.Errorf("No %s filesystem in the result", c.filesystem)
+		} else if !poolArrayContains(pools, c.poolName) {
+			t.Errorf("Pool %s doesn't exist on NS %s", c.poolName, c.address)
 		}
 	})
 
 	t.Run("GetFilesystem() not exists", func(t *testing.T) {
-		nonExistingName := fmt.Sprintf("%s-%s", c.filesystem, "non-existing")
+		nonExistingName := fmt.Sprintf("%s-%s", c.folderPath, "non-existing")
 		filesystem, err := nsp.GetFilesystem(nonExistingName)
-        if err != nil && !ns.ErrorZebiResourceNotFound(err) {
-            t.Error(err)
-        } else if filesystem.Path != "" {
-            t.Errorf("Filesystem %s should not exist, but found in the result: %v", nonExistingName, filesystem)
-        }
+		if err != nil && !ns.ErrorZebiResourceNotFound(err) {
+			t.Error(err)
+		} else if filesystem.Path != "" {
+			t.Errorf("Filesystem %s should not exist, but found in the result: %v", nonExistingName, filesystem)
+		}
 	})
 
 	t.Run("CreateFilesystem()", func(t *testing.T) {
-		destroyFilesystemWithDependents(nsp, c.filesystem)
+		err := cleanupProject(nsp, c.projectPath)
 
-		err = nsp.CreateFilesystem(ns.CreateFilesystemParams{
-			Path: c.filesystem,
-		})
 		if err != nil {
 			t.Error(err)
 			return
 		}
 
-		filesystems, err := nsp.GetFilesystems(c.dataset)
+		err = nsp.CreateFilesystem(ns.CreateFilesystemParams{
+			Path: c.folderPath,
+		})
+
 		if err != nil {
 			t.Error(err)
-		} else if !filesystemArrayContains(filesystems, c.filesystem) {
-			t.Errorf("New filesystem %s wasn't created on NS %s", c.filesystem, c.address)
+			return
+		}
+
+		filesystems, err := nsp.GetFilesystems(c.projectPath)
+		fmt.Println(" =====> fs list", filesystems)
+
+		if err != nil {
+			t.Error(err)
+		} else if !filesystemArrayContains(filesystems, c.folderPath) {
+			t.Errorf("New filesystem %s wasn't created on NS %s", c.folderPath, c.address)
+		}
+	})
+
+	t.Run("GetFilesystems()", func(t *testing.T) {
+		filesystems, err := nsp.GetFilesystems(c.projectPath)
+		if err != nil {
+			t.Error(err)
+		} else if filesystemArrayContains(filesystems, c.poolName) {
+			t.Errorf("Pool %s should not be in the results", c.poolName)
+		} else if !filesystemArrayContains(filesystems, c.folderPath) {
+			t.Errorf("Dataset %s doesn't exist", c.folderPath)
+		}
+	})
+
+	t.Run("GetFilesystem() exists", func(t *testing.T) {
+		filesystem, err := nsp.GetFilesystem(c.folderPath)
+		if err != nil {
+			t.Error(err)
+		} else if filesystem.Path != c.folderPath {
+			t.Errorf("No %s filesystem in the result", c.folderPath)
 		}
 	})
 
 	t.Run("GetFilesystem() created filesystem should not be shared", func(t *testing.T) {
-		filesystem, err := nsp.GetFilesystem(c.filesystem)
+		filesystem, err := nsp.GetFilesystem(c.folderPath)
 		if err != nil {
 			t.Error(err)
 		} else if filesystem.SharedOverNfs {
-			t.Errorf("Created filesystem %s should not be shared over NFS (NS %s)", c.filesystem, c.address)
+			t.Errorf("Created filesystem %s should not be shared over NFS (NS %s)", c.folderPath, c.address)
 		} else if filesystem.SharedOverSmb {
-			t.Errorf("Created filesystem %s should not be shared over SMB (NS %s)", c.filesystem, c.address)
+			t.Errorf("Created filesystem %s should not be shared over SMB (NS %s)", c.folderPath, c.address)
 		}
 	})
 
 	t.Run("CreateNfsShare()", func(t *testing.T) {
-		nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.filesystem})
+		//nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.folderPath})
 
 		err = nsp.CreateNfsShare(ns.CreateNfsShareParams{
-			Filesystem: c.filesystem,
+			Filesystem: c.folderPath,
 		})
 		if err != nil {
 			t.Error(err)
@@ -178,38 +196,46 @@ func TestProvider_NewProvider(t *testing.T) {
 	})
 
 	t.Run("GetFilesystem() created filesystem should be shared over NFS", func(t *testing.T) {
-		filesystem, err := nsp.GetFilesystem(c.filesystem)
+		filesystem, err := nsp.GetFilesystem(c.folderPath)
 		if err != nil {
 			t.Error(err)
 		} else if !filesystem.SharedOverNfs {
-			t.Errorf("Created filesystem %s should be shared (NS %s)", c.filesystem, c.address)
+			t.Errorf("Created filesystem %s should be shared (NS %s)", c.folderPath, c.address)
 		}
 	})
 
 	t.Run("nfs share should appear on NS", func(t *testing.T) {
-		//TODO other way to cut out host from address
-		host := strings.Split(c.address, "//")[1]
-		host = strings.Split(host, ":")[0]
+		URL, err := url.Parse(c.address)
+		if err != nil {
+			t.Error(err)
+		}
+
+		host := URL.Hostname()
+
+		filesystem, err := nsp.GetFilesystem(c.folderPath)
+		if err != nil {
+			t.Error(err)
+		}
 
 		out, err := exec.Command("showmount", "-e", host).Output()
 		if err != nil {
 			t.Error(err)
-		} else if !strings.Contains(fmt.Sprintf("%s", out), c.filesystem) {
-			t.Errorf("Cannot find '%s' nfs in the 'showmount' output: \n---\n%s\n---\n", c.filesystem, out)
+		} else if !strings.Contains(fmt.Sprintf("%s", out), filesystem.MountPoint) {
+			t.Errorf("Cannot find '%s' nfs in the 'showmount' output: \n---\n%s\n---\n", c.folderPath, out)
 		}
 	})
 
 	t.Run("DeleteNfsShare()", func(t *testing.T) {
-		filesystems, err := nsp.GetFilesystems(c.dataset)
+		filesystems, err := nsp.GetFilesystems(c.projectPath)
 		if err != nil {
 			t.Error(err)
 			return
-		} else if !filesystemArrayContains(filesystems, c.filesystem) {
-			t.Skipf("Filesystem %s doesn't exist on NS %s", c.filesystem, c.address)
+		} else if !filesystemArrayContains(filesystems, c.folderPath) {
+			t.Skipf("Filesystem %s doesn't exist on NS %s", c.folderPath, c.address)
 			return
 		}
 
-		err = nsp.DeleteNfsShare(c.filesystem)
+		err = nsp.DeleteNfsShare(c.folderPath)
 		if err != nil {
 			t.Error(err)
 		}
@@ -221,10 +247,10 @@ func TestProvider_NewProvider(t *testing.T) {
 		t.Run(
 			fmt.Sprintf("CreateSmbShare() should create SMB share with '%s' share name", smbShareName),
 			func(t *testing.T) {
-				nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.filesystem})
+				nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.folderPath})
 
 				err = nsp.CreateSmbShare(ns.CreateSmbShareParams{
-					Filesystem: c.filesystem,
+					Filesystem: c.folderPath,
 					ShareName:  smbShareName,
 				})
 				if err != nil {
@@ -234,16 +260,16 @@ func TestProvider_NewProvider(t *testing.T) {
 		)
 
 		t.Run("GetFilesystem() created filesystem should be shared over SMB", func(t *testing.T) {
-			filesystem, err := nsp.GetFilesystem(c.filesystem)
+			filesystem, err := nsp.GetFilesystem(c.folderPath)
 			if err != nil {
 				t.Error(err)
 			} else if !filesystem.SharedOverSmb {
-				t.Errorf("Created filesystem %s should be shared over SMB (NS %s)", c.filesystem, c.address)
+				t.Errorf("Created filesystem %s should be shared over SMB (NS %s)", c.folderPath, c.address)
 			}
 		})
 
 		t.Run("GetSmbShareName() should return SMB share name", func(t *testing.T) {
-			filesystem, err := nsp.GetFilesystem(c.filesystem)
+			filesystem, err := nsp.GetFilesystem(c.folderPath)
 			if err != nil {
 				t.Error(err)
 				return
@@ -256,7 +282,7 @@ func TestProvider_NewProvider(t *testing.T) {
 				expectedShareName = smbShareName
 			}
 
-			shareName, err := nsp.GetSmbShareName(c.filesystem)
+			shareName, err := nsp.GetSmbShareName(c.folderPath)
 			if err != nil {
 				t.Error(err)
 			} else if shareName != expectedShareName {
@@ -264,7 +290,7 @@ func TestProvider_NewProvider(t *testing.T) {
 					"Expected shareName='%s' but got '%s', for filesystem '%s' on NS %s",
 					expectedShareName,
 					shareName,
-					c.filesystem,
+					c.folderPath,
 					c.address,
 				)
 			}
@@ -273,7 +299,7 @@ func TestProvider_NewProvider(t *testing.T) {
 		//TODO test SMB share, mount cifs?
 
 		t.Run("DeleteSmbShare()", func(t *testing.T) {
-			err = nsp.DeleteSmbShare(c.filesystem)
+			err = nsp.DeleteSmbShare(c.folderPath)
 			if err != nil {
 				t.Error(err)
 			}
@@ -281,28 +307,28 @@ func TestProvider_NewProvider(t *testing.T) {
 	}
 
 	t.Run("DestroyFilesystem()", func(t *testing.T) {
-		nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{
+		nsp.DestroyFilesystem(c.folderPath, ns.DestroyFilesystemParams{
 			DestroySnapshots:               true,
 			PromoteMostRecentCloneIfExists: true,
 		})
-		nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.filesystem})
+		nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.folderPath})
 
-		err = nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{DestroySnapshots: true})
+		err = nsp.DestroyFilesystem(c.folderPath, ns.DestroyFilesystemParams{DestroySnapshots: true})
 		if err != nil {
 			t.Error(err)
 			return
 		}
 
-		filesystems, err := nsp.GetFilesystems(c.dataset)
+		filesystems, err := nsp.GetFilesystems(c.projectPath)
 		if err != nil {
 			t.Error(err)
-		} else if filesystemArrayContains(filesystems, c.filesystem) {
-			t.Errorf("Filesystem %s still exists on NS %s", c.filesystem, c.address)
+		} else if filesystemArrayContains(filesystems, c.folderPath) {
+			t.Errorf("Filesystem %s still exists on NS %s", c.folderPath, c.address)
 		}
 	})
 
 	t.Run("CreateFilesystem() with referenced quota size", func(t *testing.T) {
-		nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{
+		nsp.DestroyFilesystem(c.folderPath, ns.DestroyFilesystemParams{
 			DestroySnapshots:               true,
 			PromoteMostRecentCloneIfExists: true,
 		})
@@ -310,7 +336,7 @@ func TestProvider_NewProvider(t *testing.T) {
 		var referencedQuotaSize int64 = 2 * 1024 * 1024 * 1024
 
 		err = nsp.CreateFilesystem(ns.CreateFilesystemParams{
-			Path:                c.filesystem,
+			Path:                c.folderPath,
 			ReferencedQuotaSize: referencedQuotaSize,
 		})
 		if err != nil {
@@ -318,36 +344,39 @@ func TestProvider_NewProvider(t *testing.T) {
 			return
 		}
 
-		filesystem, err := nsp.GetFilesystem(c.filesystem)
+		filesystem, err := nsp.GetFilesystem(c.folderPath)
 		if err != nil {
 			t.Error(err)
 			return
-		} else if filesystem.GetReferencedQuotaSize() != referencedQuotaSize {
+		} else if filesystem.QuotaSize != referencedQuotaSize {
 			t.Errorf(
 				"New filesystem %s referenced quota size expected to be %d, but got %d (NS %s)",
 				filesystem.Path,
 				referencedQuotaSize,
-				filesystem.GetReferencedQuotaSize(),
+				filesystem.QuotaSize,
 				c.address,
 			)
 		}
 	})
 
 	t.Run("CreateSnapshot()", func(t *testing.T) {
-		nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{
+		nsp.DestroyFilesystem(c.folderPath, ns.DestroyFilesystemParams{
 			DestroySnapshots:               true,
 			PromoteMostRecentCloneIfExists: true,
 		})
-		nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.filesystem})
+
+		nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.folderPath})
 
 		err = nsp.CreateSnapshot(ns.CreateSnapshotParams{
 			Path: testSnapshotPath,
 		})
+
 		if err != nil {
 			t.Error(err)
 		}
 
 		snapshot, err := nsp.GetSnapshot(testSnapshotPath)
+
 		if err != nil {
 			t.Error(err)
 			return
@@ -369,10 +398,10 @@ func TestProvider_NewProvider(t *testing.T) {
 				c.address,
 			)
 			return
-		} else if snapshot.Parent != c.filesystem {
+		} else if snapshot.Parent != c.folderPath {
 			t.Errorf(
 				"Created snapshot parent expected to be '%s', but got '%s' (Snapshot: %+v, NS %s)",
-				c.filesystem,
+				c.folderPath,
 				snapshot.Parent,
 				snapshot,
 				c.address,
@@ -380,15 +409,15 @@ func TestProvider_NewProvider(t *testing.T) {
 			return
 		}
 
-		snapshots, err := nsp.GetSnapshots(c.filesystem, true)
+		snapshots, err := nsp.GetSnapshots(c.folderPath, true)
 		if err != nil {
-			t.Errorf("Cannot get '%s' snapshot list: %v", c.filesystem, err)
+			t.Errorf("Cannot get '%s' snapshot list: %v", c.folderPath, err)
 			return
 		} else if len(snapshots) == 0 {
 			t.Errorf(
 				"New snapshot '%s' was not found in '%s' snapshot list, the list is empty: %v",
 				c.snapshotName,
-				c.filesystem,
+				c.folderPath,
 				snapshots,
 			)
 			return
@@ -396,7 +425,7 @@ func TestProvider_NewProvider(t *testing.T) {
 			t.Errorf(
 				"New snapshot '%s' was not found in '%s' snapshot list: %v",
 				c.snapshotName,
-				c.filesystem,
+				c.folderPath,
 				snapshots,
 			)
 			return
@@ -405,7 +434,7 @@ func TestProvider_NewProvider(t *testing.T) {
 
 	t.Run("CloneSnapshot()", func(t *testing.T) {
 		nsp.DestroySnapshot(testSnapshotPath)
-		nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{
+		nsp.DestroyFilesystem(c.folderPath, ns.DestroyFilesystemParams{
 			DestroySnapshots:               true,
 			PromoteMostRecentCloneIfExists: true,
 		})
@@ -413,7 +442,7 @@ func TestProvider_NewProvider(t *testing.T) {
 			DestroySnapshots:               true,
 			PromoteMostRecentCloneIfExists: true,
 		})
-		nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.filesystem})
+		nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.folderPath})
 
 		err := nsp.CreateSnapshot(ns.CreateSnapshotParams{Path: testSnapshotPath})
 		if err != nil {
@@ -437,11 +466,11 @@ func TestProvider_NewProvider(t *testing.T) {
 	})
 
 	t.Run("DestroySnapshot()", func(t *testing.T) {
-		nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{
+		nsp.DestroyFilesystem(c.folderPath, ns.DestroyFilesystemParams{
 			DestroySnapshots:               true,
 			PromoteMostRecentCloneIfExists: true,
 		})
-		nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.filesystem})
+		nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.folderPath})
 		nsp.CreateSnapshot(ns.CreateSnapshotParams{Path: testSnapshotPath})
 
 		err := nsp.DestroySnapshot(testSnapshotPath)
@@ -456,14 +485,14 @@ func TestProvider_NewProvider(t *testing.T) {
 			DestroySnapshots:               true,
 			PromoteMostRecentCloneIfExists: true,
 		})
-		nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{
+		nsp.DestroyFilesystem(c.folderPath, ns.DestroyFilesystemParams{
 			DestroySnapshots:               true,
 			PromoteMostRecentCloneIfExists: true,
 		})
 
-		err := nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.filesystem})
+		err := nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.folderPath})
 		if err != nil {
-			t.Errorf("Failed to create preconditions: Create filesystem '%s' failed: %v", c.filesystem, err)
+			t.Errorf("Failed to create preconditions: Create filesystem '%s' failed: %v", c.folderPath, err)
 			return
 		}
 		err = nsp.CreateSnapshot(ns.CreateSnapshotParams{Path: testSnapshotPath})
@@ -472,24 +501,24 @@ func TestProvider_NewProvider(t *testing.T) {
 			return
 		}
 
-		err = nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{DestroySnapshots: false})
-		if !ns.IsBusyNefError(err) {
+		err = nsp.DestroyFilesystem(c.folderPath, ns.DestroyFilesystemParams{DestroySnapshots: false})
+		if !ns.ErrorZebiInUse(err) {
 			t.Errorf(
-				`Filesystem delete request is supposed to return EBUSY error in case of deleting
+				`Filesystem delete request is supposed to return EZEBI_RESOURCE_INUSE error in case of deleting
 				filesystem with snapshots, but it's not: %v`,
 				err,
 			)
 			return
 		}
 
-		err = nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{DestroySnapshots: true})
+		err = nsp.DestroyFilesystem(c.folderPath, ns.DestroyFilesystemParams{DestroySnapshots: true})
 		if err != nil {
 			t.Errorf("Cannot destroy filesystem, even with snapshots=true option: %v", err)
 			return
 		}
 
-		filesystem, err := nsp.GetFilesystem(c.filesystem)
-		if !ns.IsNotExistNefError(err) {
+		filesystem, err := nsp.GetFilesystem(c.folderPath)
+		if !ns.ErrorZebiResourceNotFound(err) {
 			t.Errorf(
 				"Get filesystem request should return ENOENT error, but it returns filesystem: %v, error: %v",
 				filesystem,
@@ -504,14 +533,14 @@ func TestProvider_NewProvider(t *testing.T) {
 			DestroySnapshots:               true,
 			PromoteMostRecentCloneIfExists: true,
 		})
-		nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{
+		nsp.DestroyFilesystem(c.folderPath, ns.DestroyFilesystemParams{
 			DestroySnapshots:               true,
 			PromoteMostRecentCloneIfExists: true,
 		})
 
-		err := nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.filesystem})
+		err := nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.folderPath})
 		if err != nil {
-			t.Errorf("Failed to create preconditions: Create filesystem '%s' failed: %v", c.filesystem, err)
+			t.Errorf("Failed to create preconditions: Create filesystem '%s' failed: %v", c.folderPath, err)
 			return
 		}
 		err = nsp.CreateSnapshot(ns.CreateSnapshotParams{Path: testSnapshotPath})
@@ -532,20 +561,7 @@ func TestProvider_NewProvider(t *testing.T) {
 			return
 		}
 
-		err = nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{
-			DestroySnapshots:               true,
-			PromoteMostRecentCloneIfExists: false,
-		})
-		if !ns.IsAlreadyExistNefError(err) {
-			t.Errorf(
-				`Filesystem delete request is supposed to return EEXIST error in case of deleting
-				filesystem with clones, but it's not: %v`,
-				err,
-			)
-			return
-		}
-
-		err = nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{
+		err = nsp.DestroyFilesystem(c.folderPath, ns.DestroyFilesystemParams{
 			DestroySnapshots:               true,
 			PromoteMostRecentCloneIfExists: true,
 		})
@@ -554,8 +570,8 @@ func TestProvider_NewProvider(t *testing.T) {
 			return
 		}
 
-		filesystem, err := nsp.GetFilesystem(c.filesystem)
-		if !ns.IsNotExistNefError(err) {
+		filesystem, err := nsp.GetFilesystem(c.folderPath)
+		if !ns.ErrorZebiResourceNotFound(err) {
 			t.Errorf(
 				"Get filesystem request should return ENOENT error, but it returns filesystem: %v, error: %v",
 				filesystem,
@@ -574,7 +590,7 @@ func TestProvider_NewProvider(t *testing.T) {
 	})
 
 	t.Run("GetFilesystemAvailableCapacity()", func(t *testing.T) {
-		nsp.DestroyFilesystem(c.filesystem, ns.DestroyFilesystemParams{
+		nsp.DestroyFilesystem(c.folderPath, ns.DestroyFilesystemParams{
 			DestroySnapshots:               true,
 			PromoteMostRecentCloneIfExists: true,
 		})
@@ -582,7 +598,7 @@ func TestProvider_NewProvider(t *testing.T) {
 		var referencedQuotaSize int64 = 3 * 1024 * 1024 * 1024
 
 		err = nsp.CreateFilesystem(ns.CreateFilesystemParams{
-			Path:                c.filesystem,
+			Path:                c.folderPath,
 			ReferencedQuotaSize: referencedQuotaSize,
 		})
 		if err != nil {
@@ -590,16 +606,16 @@ func TestProvider_NewProvider(t *testing.T) {
 			return
 		}
 
-		availableCapacity, err := nsp.GetFilesystemAvailableCapacity(c.filesystem)
+		availableCapacity, err := nsp.GetFilesystemAvailableCapacity(c.folderPath)
 		if err != nil {
 			t.Error(err)
 			return
 		} else if availableCapacity == 0 {
-			t.Errorf("New filesystem %s indicates wrong available capacity (0), on: %s", c.filesystem, c.address)
-		} else if availableCapacity >= referencedQuotaSize {
+			t.Errorf("New filesystem %s indicates wrong available capacity (0), on: %s", c.folderPath, c.address)
+		} else if availableCapacity > referencedQuotaSize {
 			t.Errorf(
 				"New filesystem %s available capacity expected to be more or equal to %d, but got %d (NS %s)",
-				c.filesystem,
+				c.folderPath,
 				referencedQuotaSize,
 				availableCapacity,
 				c.address,
@@ -608,77 +624,82 @@ func TestProvider_NewProvider(t *testing.T) {
 	})
 
 	t.Run("GetFilesystemsSlice()", func(t *testing.T) {
-		destroyFilesystemWithDependents(nsp, c.filesystem)
+		err := cleanupProject(nsp, c.projectPath)
 
-		err = nsp.CreateFilesystem(ns.CreateFilesystemParams{
-			Path: c.filesystem,
-		})
 		if err != nil {
 			t.Error(err)
 			return
 		}
 
-		count := 5
-		err = createFilesystemChildren(nsp, c.filesystem, count)
+		//err = nsp.CreateFilesystem(ns.CreateFilesystemParams{
+		//	Path: c.folderPath,
+		//})
+		//if err != nil {
+		//	t.Error(err)
+		//	return
+		//}
+
+		count := 10
+		err = createFilesystemChildren(nsp, c.projectPath, count)
 		if err != nil {
 			t.Error(err)
 			return
 		}
 
-		filesystems, err := nsp.GetFilesystemsSlice(c.filesystem, 0, 0)
+		filesystems, err := nsp.GetFilesystemsSlice(c.projectPath, 0, 0)
 		if err == nil {
 			t.Errorf("Should return an error when limit is equal 0, but got: %v", err)
 			return
 		}
 
-		filesystems, err = nsp.GetFilesystemsSlice(c.filesystem, 2, 0)
+		filesystems, err = nsp.GetFilesystemsSlice(c.projectPath, 2, 0)
 		if err != nil {
 			t.Error(err)
 			return
 		} else if len(filesystems) != 2 {
 			t.Errorf("GetFilesystems() returned %d filesystems, but expected 2", len(filesystems))
 			return
-		} else if filesystems[0].Path != getFilesystemChildName(c.filesystem, 1) {
+		} else if filesystems[0].Path != getFilesystemChildName(c.projectPath, 1) {
 			t.Errorf(
 				"Limit: '2', offset: '0' - first item expected to be '%s' but got: %+v",
-				getFilesystemChildName(c.filesystem, 1),
+				getFilesystemChildName(c.projectPath, 1),
 				filesystems,
 			)
 			return
-		} else if filesystems[1].Path != getFilesystemChildName(c.filesystem, 2) {
+		} else if filesystems[1].Path != getFilesystemChildName(c.projectPath, 2) {
 			t.Errorf(
 				"Limit: '2', offset: '0' - second item expected to be '%s' but got: %+v",
-				getFilesystemChildName(c.filesystem, 2),
+				getFilesystemChildName(c.projectPath, 2),
 				filesystems,
 			)
 			return
 		}
 
-		filesystems, err = nsp.GetFilesystemsSlice(c.filesystem, 4, 3)
+		filesystems, err = nsp.GetFilesystemsSlice(c.projectPath, 4, 3)
 		if err != nil {
 			t.Error(err)
 			return
-		} else if len(filesystems) != 3 {
-			t.Errorf("Returned %d filesystems, but expected 3", len(filesystems))
+		} else if len(filesystems) != 4 {
+			t.Errorf("Returned %d filesystems, but expected 4", len(filesystems))
 			return
-		} else if filesystems[0].Path != getFilesystemChildName(c.filesystem, 3) {
+		} else if filesystems[0].Path != getFilesystemChildName(c.projectPath, 4) {
 			t.Errorf(
 				"Limit: '4', offset: '3' - first item expected to be '%s' but got: %+v",
-				getFilesystemChildName(c.filesystem, 3),
+				getFilesystemChildName(c.projectPath, 4),
 				filesystems,
 			)
 			return
-		} else if filesystems[1].Path != getFilesystemChildName(c.filesystem, 4) {
+		} else if filesystems[1].Path != getFilesystemChildName(c.projectPath, 5) {
 			t.Errorf(
 				"Limit: '4', offset: '3' - second item expected to be '%s' but got: %+v",
-				getFilesystemChildName(c.filesystem, 4),
+				getFilesystemChildName(c.projectPath, 5),
 				filesystems,
 			)
 			return
-		} else if filesystems[2].Path != getFilesystemChildName(c.filesystem, 5) {
+		} else if filesystems[2].Path != getFilesystemChildName(c.projectPath, 6) {
 			t.Errorf(
 				"Limit: '4', offset: '3' - third item expected to be '%s' but got: %+v",
-				getFilesystemChildName(c.filesystem, 5),
+				getFilesystemChildName(c.projectPath, 6),
 				filesystems,
 			)
 			return
@@ -691,27 +712,23 @@ func TestProvider_NewProvider(t *testing.T) {
 			return
 		}
 
-		destroyFilesystemWithDependents(nsp, c.filesystem)
+		err := cleanupProject(nsp, c.projectPath)
 
-		t.Log("create parent filesystem")
-		err = nsp.CreateFilesystem(ns.CreateFilesystemParams{
-			Path: c.filesystem,
-		})
 		if err != nil {
 			t.Error(err)
 			return
 		}
 
-		count := 101
+		count := 19
 		t.Logf("create %d children filesystems", count)
-		err = createFilesystemChildren(nsp, c.filesystem, count)
+		err = createFilesystemChildren(nsp, c.projectPath, count)
 		if err != nil {
 			t.Error(err)
 			return
 		}
 
 		t.Log("get all filesystems")
-		filesystems, err := nsp.GetFilesystems(c.filesystem)
+		filesystems, err := nsp.GetFilesystems(c.projectPath)
 		if err != nil {
 			t.Error(err)
 			return
@@ -721,7 +738,7 @@ func TestProvider_NewProvider(t *testing.T) {
 
 		t.Log("check if all filesystems are in the list")
 		for i := 1; i <= len(filesystems); i++ {
-			fs := getFilesystemChildName(c.filesystem, i)
+			fs := getFilesystemChildName(c.projectPath, i)
 			if !filesystemArrayContains(filesystems, fs) {
 				t.Errorf("Filesystem list doesn't contain '%s' filesystem", fs)
 			}
@@ -734,17 +751,16 @@ func TestProvider_NewProvider(t *testing.T) {
 			return
 		}
 
-		destroyFilesystemWithDependents(nsp, c.filesystem)
+		err := cleanupProject(nsp, c.projectPath)
 
-		t.Log("create parent filesystem")
-		if err = nsp.CreateFilesystem(ns.CreateFilesystemParams{Path: c.filesystem}); err != nil {
+		if err != nil {
 			t.Error(err)
 			return
 		}
 
-		count := 101
+		count := 25
 		t.Logf("create %d children filesystems", count)
-		if err = createFilesystemChildren(nsp, c.filesystem, count); err != nil {
+		if err = createFilesystemChildren(nsp, c.projectPath, count); err != nil {
 			t.Error(err)
 			return
 		}
@@ -756,10 +772,10 @@ func TestProvider_NewProvider(t *testing.T) {
 			ExpectedNextToken string
 		}{
 			{count + 1, count, "", ""},
-			{5, 5, "", getFilesystemChildName(c.filesystem, 5)},
-			{5, 5, getFilesystemChildName(c.filesystem, 5), getFilesystemChildName(c.filesystem, 10)},
-			{10, 10, getFilesystemChildName(c.filesystem, 3), getFilesystemChildName(c.filesystem, 13)},
-			{10, 1, getFilesystemChildName(c.filesystem, 100), ""},
+			{5, 5, "", getFilesystemChildName(c.projectPath, 5)},
+			{5, 5, getFilesystemChildName(c.projectPath, 5), getFilesystemChildName(c.projectPath, 10)},
+			{10, 10, getFilesystemChildName(c.projectPath, 3), getFilesystemChildName(c.projectPath, 13)},
+			{10, 10, getFilesystemChildName(c.projectPath, 10), getFilesystemChildName(c.projectPath, 20)},
 			{1, 0, "NOT_EXISTING", ""},
 			{0, count, "", ""},
 		}
@@ -768,7 +784,7 @@ func TestProvider_NewProvider(t *testing.T) {
 			f := fmt.Sprintf("startingToken: '%s', limit: '%d'", v.StartingToken, v.Limit)
 			t.Logf("...check %s", f)
 
-			filesystems, nextToken, err := nsp.GetFilesystemsWithStartingToken(c.filesystem, v.StartingToken, v.Limit)
+			filesystems, nextToken, err := nsp.GetFilesystemsWithStartingToken(c.projectPath, v.StartingToken, v.Limit)
 			if err != nil {
 				t.Error(err)
 				return
@@ -784,7 +800,7 @@ func TestProvider_NewProvider(t *testing.T) {
 		nextToken := ""
 		filesystems := []ns.Filesystem{}
 		for {
-			filesystemsSlice, nt, err := nsp.GetFilesystemsWithStartingToken(c.filesystem, nextToken, 25)
+			filesystemsSlice, nt, err := nsp.GetFilesystemsWithStartingToken(c.projectPath, nextToken, 25)
 			if err != nil {
 				t.Error(err)
 				return
@@ -814,17 +830,25 @@ func TestProvider_NewProvider(t *testing.T) {
 
 		t.Log("check if all filesystems are in the list")
 		for i := 1; i <= len(filesystems); i++ {
-			fs := getFilesystemChildName(c.filesystem, i)
-			if !filesystemArrayContains(filesystems, getFilesystemChildName(c.filesystem, i)) {
+			fs := getFilesystemChildName(c.projectPath, i)
+			if !filesystemArrayContains(filesystems, getFilesystemChildName(c.projectPath, i)) {
 				t.Errorf("Filesystem list doesn't contain '%s' filesystem", fs)
 			}
 		}
 	})
 
 	// clean up
-	nsp.DestroySnapshot(testSnapshotPath)
-	destroyFilesystemWithDependents(nsp, testSnapshotCloneTargetPath)
-	destroyFilesystemWithDependents(nsp, c.filesystem)
+	cleanupProject(nsp, c.projectPath)
+	err = nsp.CreateFilesystem(ns.CreateFilesystemParams{
+		Path: c.folderPath,
+	})
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	// nsp.DestroySnapshot(testSnapshotPath)
+	// destroyFilesystemWithDependents(nsp, testSnapshotCloneTargetPath)
+	// destroyFilesystemWithDependents(nsp, c.folderPath)
 }
 
 // getFilesystemChildName("fs", 13) === "fs/child-013"
@@ -844,8 +868,18 @@ func createFilesystemChildren(nsp ns.ProviderInterface, parent string, count int
 	return runConcurrentJobs("create filesystem", jobs)
 }
 
+func cleanupProject(nsp ns.ProviderInterface, path string) error {
+	nsp.DeleteProject(c.projectPath)
+	for {
+		_, err := nsp.GetProject(c.projectPath)
+		if err != nil {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	return nsp.CreateProject(c.projectPath)
+}
 
-//xxx
 func destroyFilesystemWithDependents(nsp ns.ProviderInterface, filesystem string) error {
 	err := nsp.DestroyFilesystem(filesystem, ns.DestroyFilesystemParams{DestroySnapshots: true})
 	if err != nil {
@@ -915,10 +949,11 @@ func poolArrayContains(array []ns.Pool, value string) bool {
 func filesystemArrayContains(array []ns.Filesystem, value string) bool {
 	for _, v := range array {
 		if v.Path == value {
+			fmt.Println(" =====> FOUND", value)
 			return true
 		} else {
-            fmt.Println("v.Path", v.Path, " != ", value)
-        }
+			fmt.Println(" =====> v.Path", v.Path, " != ", value)
+		}
 	}
 	return false
 }

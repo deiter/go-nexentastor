@@ -20,8 +20,8 @@ const requestTimeout = 30 * time.Second
 // Client - request client for any REST API
 type Client struct {
 	address    string
-    username   string
-    password   string
+	username   string
+	password   string
 	httpClient *http.Client
 	log        *logrus.Entry
 
@@ -87,7 +87,7 @@ func (c *Client) Send(path string, data interface{}) (int, []byte, error) {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-    req.SetBasicAuth(c.username, c.password)
+	req.SetBasicAuth(c.username, c.password)
 
 	res, err := c.httpClient.Do(req)
 	if err != nil {
@@ -106,17 +106,17 @@ func (c *Client) Send(path string, data interface{}) (int, []byte, error) {
 		return res.StatusCode, nil, err
 	}
 
-    l.Debugf("response body: %s", bodyBytes)
+	l.Debugf("response body: %s", bodyBytes)
 
 	return res.StatusCode, bodyBytes, err
 }
 
 // ClientArgs - params to create Client instance
 type ClientArgs struct {
-	Address string
-    Username string
-    Password string
-	Log     *logrus.Entry
+	Address  string
+	Username string
+	Password string
+	Log      *logrus.Entry
 
 	// InsecureSkipVerify controls whether a client verifies the server's certificate chain and host name.
 	InsecureSkipVerify bool
@@ -141,8 +141,8 @@ func NewClient(args ClientArgs) ClientInterface {
 	l.Debugf("created for '%s'", args.Address)
 	return &Client{
 		address:    args.Address,
-        username:   args.Username,
-        password:   args.Password,
+		username:   args.Username,
+		password:   args.Password,
 		httpClient: httpClient,
 		log:        l,
 		requestID:  0,
