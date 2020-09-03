@@ -127,7 +127,8 @@ func TestResolver_NewResolverMulti(t *testing.T) {
 	})
 
 	t.Run("Resolve() should return error if dataset not exists", func(t *testing.T) {
-		nsProvider, err := nsr.Resolve("not/exists")
+		notExists := fmt.Sprintf("%s-%s", c.project, "not-exists")
+		nsProvider, err := nsr.Resolve(notExists)
 		if err == nil {
 			t.Errorf("Resolver return NS for non-existing datastore: %s", nsProvider)
 			return
