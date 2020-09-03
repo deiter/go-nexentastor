@@ -33,13 +33,13 @@ type Filesystem struct {
 	QuotaSize      int64  `json:"quotaSize"`
 }
 
-type Project struct {
+type ZebiProject struct {
 	Pool string `json:"poolName"`
 	Name string `json:"projectName"`
 }
 
 // Share - InteliFlash share
-type Share_v1 struct {
+type ZebiShareV1 struct {
 	PoolName      string `json:"poolName"`
 	ProjectName   string `json:"projectName"`
 	Name          string `json:"name"`
@@ -50,7 +50,7 @@ type Share_v1 struct {
 	Local         bool   `json:"local,omitempty"`
 }
 
-type Share_v2 struct {
+type ZebiShareV2 struct {
 	PoolName      string `json:"poolName"`
 	ProjectName   string `json:"projectName"`
 	Name          string `json:"name"`
@@ -62,6 +62,28 @@ type Share_v2 struct {
 	AvailableSize int64  `json:"availableSize"`
 	TotalSize     int64  `json:"totalSize"`
 	QuotaSize     int64  `json:"quotaInByte"`
+}
+
+type ZebiVolumeV1 struct {
+	PoolName string `json:"poolName"`
+	ProjectName string `json:"projectName"`
+	Name string `json:"name"`
+	Path string `json:"datasetPath"`
+	VolSize int64 `json:"volSize"`
+	ThinProvision bool `json:"thinProvision"`
+	BlockSize string `json:"blockSize"`
+	Protocol string `json:"protocol"`
+}
+
+type ZebiVolumeV2 struct {
+	PoolName string `json:"poolName"`
+	ProjectName string `json:"projectName"`
+	Name string `json:"name"`
+	Path string `json:"zfsDataSetName"`
+	VolSize int64 `json:"volSize"`
+	ThinProvision bool `json:"thinProvision"`
+	BlockSize string `json:"blockSize"`
+	Protocol string `json:"protocol"`
 }
 
 // Volume - NexentaStor volume
@@ -86,6 +108,14 @@ type LunMapping struct {
 	TargetGroup string `json:"targetGroup"`
 	HostGroup   string `json:"hostGroup"`
 	Lun         int    `json:"lun"`
+}
+
+// ITView - InteliFlash IT View
+type ItView struct {
+	HostGroupName string `json:"hostGroupName"`
+	TargetGroupName string `json:"targetGroupName"`
+	LunNbr int `json:"lunNbr"`
+	ReadOnly bool `json:"readOnly"`
 }
 
 func (fs *Filesystem) String() string {

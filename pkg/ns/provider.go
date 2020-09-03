@@ -23,7 +23,7 @@ type ProviderInterface interface {
 	GetPools() ([]Pool, error)
 
 	// projects
-	GetProject(path string) (Project, error)
+	GetProject(path string) (ZebiProject, error)
 	CreateProject(path string) error
 	DeleteProject(path string) error
 

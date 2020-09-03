@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"strconv"
+	"path/filepath"
 	"strings"
 )
 
@@ -15,7 +15,7 @@ const nsFilesystemListLimit = 100
 
 const ZebiSnapshotPrefix = "Manual-S-"
 
-func (p *Provider) Share_v1toFilesystem(share Share_v1) (filesystem Filesystem) {
+func (p *Provider) ZebiShareV1toFilesystem(share ZebiShareV1) (filesystem Filesystem) {
 	filesystem.Path = share.Path
 	filesystem.MountPoint = share.MountPoint
 	filesystem.BytesAvailable = share.AvailableSize
@@ -25,7 +25,7 @@ func (p *Provider) Share_v1toFilesystem(share Share_v1) (filesystem Filesystem) 
 	return filesystem
 }
 
-func (p *Provider) Share_v2toFilesystem(share Share_v2) (filesystem Filesystem) {
+func (p *Provider) ZebiShareV2toFilesystem(share ZebiShareV2) (filesystem Filesystem) {
 	filesystem.Path = share.Path
 	filesystem.MountPoint = share.MountPoint
 	filesystem.BytesAvailable = share.AvailableSize
@@ -45,6 +45,20 @@ func (p *Provider) Share_v2toFilesystem(share Share_v2) (filesystem Filesystem) 
 	}
 
 	return filesystem
+}
+
+func (p *Provider) ZebiVolumeV1toVolume (zvolume ZebiVolumeV1) (nvolume Volume) {
+	nvolume.Path = zvolume.Path
+	nvolume.VolumeSize = zvolume.VolSize
+
+	return nvolume
+}
+
+func (p *Provider) ZebiVolumeV2toVolume (zvolume ZebiVolumeV2) (nvolume Volume) {
+	nvolume.Path = zvolume.Path
+	nvolume.VolumeSize = zvolume.VolSize
+
+	return nvolume
 }
 
 type ZebiPool struct {
@@ -82,7 +96,7 @@ func (p GetProjectParameters) MarshalJSON() ([]byte, error) {
 	return json.Marshal(list)
 }
 
-func (p *Provider) GetProject(path string) (project Project, err error) {
+func (p *Provider) GetProject(path string) (project ZebiProject, err error) {
 	if path == "" {
 		return project, fmt.Errorf("Project path is required")
 	}
@@ -168,7 +182,7 @@ func (p *Provider) GetReferencedQuotaSize(path string) (int64, error) {
 	}
 
 	data := [1]string{path}
-	share := Share_v2{}
+	share := ZebiShareV2{}
 	err := p.sendRequestWithStruct("getShare", data, &share)
 	if err != nil {
 		return 0, err
@@ -181,14 +195,14 @@ func (p *Provider) GetFilesystem(path string) (filesystem Filesystem, err error)
 		return filesystem, fmt.Errorf("Filesystem path is empty")
 	}
 
-	data := [1]string{path}
-	share := Share_v2{}
-	err = p.sendRequestWithStruct("getShare", data, &share)
+	payload := []string{path}
+	share := ZebiShareV2{}
+	err = p.sendRequestWithStruct("getShare", payload, &share)
 	if err != nil {
 		return filesystem, err
 	}
 
-	filesystem = p.Share_v2toFilesystem(share)
+	filesystem = p.ZebiShareV2toFilesystem(share)
 
 	return filesystem, nil
 }
@@ -364,29 +378,36 @@ func (p *Provider) GetFilesystemsSlice(parent string, limit, offset int) (filesy
 		Local:   true,
 	}
 
-	shares := []Share_v1{}
+	shares := []ZebiShareV1{}
 	err = p.sendRequestWithStruct("listShares", sharesParams, &shares)
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Println("===> FULL", shares)
-
 	for count, share := range shares {
 		if count >= offset && count < (offset+limit) {
-			fmt.Println("===> count", count, "offset", offset, "limit", limit, " ADD", share)
-			filesystem := p.Share_v1toFilesystem(share)
+			filesystem := p.ZebiShareV1toFilesystem(share)
 			filesystems = append(filesystems, filesystem)
 		}
 	}
 
-	fmt.Println("===> RET", filesystems)
 	return filesystems, nil
+}
+
+type ListVolumesParams struct {
+	Pool    string
+	Project string
+	Local   bool
+}
+
+func (p ListVolumesParams) MarshalJSON() ([]byte, error) {
+	list := []interface{}{p.Pool, p.Project, p.Local}
+	return json.Marshal(list)
 }
 
 // GetVolumesSlice returns a slice of volumes by parent volumeGroup with specified limit and offset
 // offset - the first record number of collection, that would be included in result
-func (p *Provider) GetVolumesSlice(parent string, limit, offset int) ([]Volume, error) {
+func (p *Provider) GetVolumesSlice(parent string, limit, offset int) (volumes []Volume, err error) {
 	if limit <= 0 || limit >= nsFilesystemListLimit {
 		return nil, fmt.Errorf(
 			"GetVolumesSlice(): parameter 'limit' must be greater that 0 and less than %d, got: %d",
@@ -400,21 +421,29 @@ func (p *Provider) GetVolumesSlice(parent string, limit, offset int) ([]Volume, 
 		)
 	}
 
-	uri := p.RestClient.BuildURI("/storage/volumes", map[string]string{
-		"parent": parent,
-		"limit":  fmt.Sprint(limit),
-		"offset": fmt.Sprint(offset),
-	})
+	path := strings.Split(parent, string(os.PathSeparator))
 
-	response := nefStorageVolumesResponse{}
-	err := p.sendRequestWithStruct(uri, nil, &response)
+	if len(path) != 3 {
+		return nil, fmt.Errorf("Parameter 'parent' is invalid: %s", parent)
+	}
+
+	payload := ListVolumesParams{
+		Pool:    path[0],
+		Project: path[2],
+		Local:   true,
+	}
+
+	zvolumes := []ZebiVolumeV1{}
+	err = p.sendRequestWithStruct("listVolumes", payload, &zvolumes)
 	if err != nil {
 		return nil, err
 	}
 
-	volumes := []Volume{}
-	for _, fs := range response.Data {
-		volumes = append(volumes, fs)
+	for count, zvolume := range zvolumes {
+		if count >= offset && count < (offset+limit) {
+			volume := p.ZebiVolumeV1toVolume(zvolume)
+			volumes = append(volumes, volume)
+		}
 	}
 
 	return volumes, nil
@@ -510,6 +539,7 @@ func (p *Provider) UpdateFilesystem(path string, params UpdateFilesystemParams) 
 	}
 
 	shareOptions := ShareOptions{}
+
 	if params.ReferencedQuotaSize == 0 {
 		shareOptions.Quota = -1
 	} else {
@@ -633,6 +663,7 @@ func (p *Provider) CreateNfsShare(params CreateNfsShareParams) error {
 	p.sendRequest("setNFSSharingOnShare", nfsshare)
 
 	nfsacls := []NfsAcl{}
+
 	for _, rw := range params.ReadWriteList {
 		nfsacl := NfsAcl{
 			AccessMode: "rw",
@@ -743,6 +774,7 @@ func (p *Provider) CreateSmbShare(params CreateSmbShareParams) error {
 	}
 
 	sharename := params.ShareName
+
 	if sharename == "" {
 		sharename = filesystem.GetDefaultSmbShareName()
 	}
@@ -757,6 +789,7 @@ func (p *Provider) CreateSmbShare(params CreateSmbShareParams) error {
 	p.sendRequest("setSMBSharingOnShare", smbshare)
 
 	smbacls := []SmbAcl{}
+
 	for _, rw := range params.ReadWriteList {
 		smbacl := SmbAcl{
 			AccessMode: "rw",
@@ -808,8 +841,9 @@ func (p *Provider) GetSmbShareName(path string) (sharename string, err error) {
 	}
 
 	data := [1]string{path}
-	share := Share_v2{}
+	share := ZebiShareV2{}
 	err = p.sendRequestWithStruct("getShare", data, &share)
+
 	if err != nil {
 		return sharename, err
 	}
@@ -838,6 +872,7 @@ func (p *Provider) SetFilesystemACL(path string, aclRuleSet ACLRuleSet) error {
 	uri := fmt.Sprintf("/storage/filesystems/%s/acl", url.PathEscape(path))
 
 	permissions := []string{}
+
 	if aclRuleSet == ACLReadOnly {
 		permissions = append(permissions, "read_set")
 	} else {
@@ -864,7 +899,7 @@ type CreateSnapshotParams struct {
 }
 
 type CreateSnapshotOptions struct {
-	Share   Share_v1
+	Share   ZebiShareV1
 	Name    string
 	Quiesce bool
 }
@@ -899,7 +934,7 @@ func (p *Provider) CreateSnapshot(params CreateSnapshotParams) error {
 	projectName := names[2]
 	shareName := names[3]
 
-	share := Share_v1{
+	share := ZebiShareV1{
 		PoolName:    poolName,
 		ProjectName: projectName,
 		Name:        shareName,
@@ -1105,21 +1140,16 @@ func (p *Provider) GetVolume(path string) (volume Volume, err error) {
 		return volume, fmt.Errorf("Volume path is empty")
 	}
 
-	uri := p.RestClient.BuildURI("/storage/volumes", map[string]string{
-		"path": path,
-	})
+        payload := [1]string{path}
+        zvolume := ZebiVolumeV2{}
+        err = p.sendRequestWithStruct("getVolume", payload, &zvolume)
+        if err != nil {
+                return volume, err
+        }
 
-	response := nefStorageVolumesResponse{}
-	err = p.sendRequestWithStruct(uri, nil, &response)
-	if err != nil {
-		return response.Data[0], err
-	}
+        volume = p.ZebiVolumeV2toVolume(zvolume)
 
-	if len(response.Data) == 0 {
-		return volume, &NefError{Code: "ENOENT", Err: fmt.Errorf("VolumeGroup '%s' not found", path)}
-	}
-
-	return response.Data[0], nil
+        return volume, nil
 }
 
 // GetVolumeGroup returns NexentaStor volumeGroup by its path
@@ -1128,28 +1158,56 @@ func (p *Provider) GetVolumeGroup(path string) (volumeGroup VolumeGroup, err err
 		return volumeGroup, fmt.Errorf("VolumeGroup path is empty")
 	}
 
-	uri := p.RestClient.BuildURI("/storage/volumeGroups", map[string]string{
-		"path": path,
-	})
+	names := strings.Split(path, string(os.PathSeparator))
 
-	response := nefStorageVolumeGroupsResponse{}
-	err = p.sendRequestWithStruct(uri, nil, &response)
-	if err != nil {
-		return volumeGroup, err
-	}
+        if len(names) != 3 {
+                return volumeGroup, fmt.Errorf("Parameter 'GetVolumeGroup.Path' is invalid: %s", path)
+        }
 
-	if len(response.Data) == 0 {
-		return volumeGroup, &NefError{Code: "ENOENT", Err: fmt.Errorf("VolumeGroup '%s' not found", path)}
-	}
+        pool := names[0]
+        name := names[2]
 
-	return response.Data[0], nil
+        payload := GetProjectParameters{
+                Pool:  pool,
+                Name:  name,
+                Local: true,
+        }
+
+	project := ZebiProject{}
+        err = p.sendRequestWithStruct("getProject", payload, &project)
+        if err != nil {
+                return volumeGroup, err
+        }
+
+	volumeGroup.Path = filepath.Join(project.Pool, "Local", project.Name)
+
+	return volumeGroup, nil
 }
 
 // CreateVolumeParams - params to create a volume
 type CreateVolumeParams struct {
-	// volume path w/o leading slash
 	Path       string `json:"path"`
 	VolumeSize int64  `json:"volumeSize"`
+}
+
+// CreateVolumePayload - payload to create an InteliFlash volume
+type VolumeProperties struct {
+	PoolName string `json:"poolName"`
+	ProjectName string `json:"projectName"`
+	Name string `json:"name"`
+	VolSize int64 `json:"volSize"`
+	Protocol string `json:"protocol"`
+	ThinProvisioning bool `json:"thinProvisioning"`
+}
+
+type CreateVolumePayload struct {
+	Properties VolumeProperties
+	Inherit bool
+}
+
+func (p CreateVolumePayload) MarshalJSON() ([]byte, error) {
+    list := []interface{}{p.Properties, p.Inherit}
+    return json.Marshal(list)
 }
 
 // CreateVolume creates volume by path and size
@@ -1159,7 +1217,27 @@ func (p *Provider) CreateVolume(params CreateVolumeParams) error {
 			"Parameters 'Volume.Path' is required, received %+v", params)
 	}
 
-	return p.sendRequest("/storage/volumes", params)
+	names := strings.Split(params.Path, string(os.PathSeparator))
+
+	if len(names) != 4 {
+                return fmt.Errorf("Parameter 'CreateVolumeParams.Path' is invalid: %s", params.Path)
+        }
+
+	properties := VolumeProperties {
+		PoolName: names[0],
+		ProjectName: names[2],
+		Name: names[3],
+		VolSize: params.VolumeSize,
+		Protocol: "iSCSI",
+		ThinProvisioning: true,
+	}
+
+	payload := CreateVolumePayload {
+		Properties: properties,
+		Inherit: false,
+	}
+
+	return p.sendRequest("createVolume", payload)
 }
 
 // UpdateVolumeParams - params to update volume
@@ -1168,14 +1246,22 @@ type UpdateVolumeParams struct {
 	VolumeSize int64 `json:"volumeSize,omitempty"`
 }
 
+// UpdateVolumePayload - payload to update an InteliFlash volume
+type UpdateVolumePayload struct {
+	VolSize int64 `json:"volSize"`
+}
+
 // UpdateVolume updates volume by path
 func (p *Provider) UpdateVolume(path string, params UpdateVolumeParams) error {
 	if path == "" {
 		return fmt.Errorf("Parameter 'path' is required")
 	}
 
-	uri := fmt.Sprintf("/storage/volumes/%s", url.PathEscape(path))
-	return p.sendRequest(uri, params)
+	payload := UpdateVolumePayload {
+		VolSize: params.VolumeSize,
+	}
+
+	return p.sendRequest("modifyVolumeProperties", payload)
 }
 
 // GetLunMapping returns NexentaStor lunmapping for a volume
@@ -1183,26 +1269,40 @@ func (p *Provider) GetLunMapping(path string) (lunMapping LunMapping, err error)
 	if path == "" {
 		return lunMapping, fmt.Errorf("Volume path is empty")
 	}
-	uri := p.RestClient.BuildURI("/san/lunMappings", map[string]string{
-		"volume": path,
-		"fields": "id,volume,targetGroup,hostGroup,lun",
-	})
-	response := nefLunMappingsResponse{}
-	err = p.sendRequestWithStruct(uri, nil, &response)
-	if err != nil {
-		return lunMapping, err
-	}
-	if len(response.Data) == 0 {
-		return lunMapping, &NefError{Code: "ENOENT", Err: fmt.Errorf("lunMapping '%s' not found", path)}
+
+	payload := []string{path}
+	view := ItView{}
+	err = p.sendRequestWithStruct("getVolumeITView", payload, &view)
+
+        if err != nil {
+                return lunMapping, err
+        }
+
+	lunMapping = LunMapping {
+		Volume: path,
+		TargetGroup: view.TargetGroupName,
+		HostGroup: view.HostGroupName,
+		Lun: view.LunNbr,
 	}
 
-	return response.Data[0], nil
+	return lunMapping, nil
 }
 
+// xxx
 // CreateISCSITargetParamas - params to create new iSCSI target
 type CreateISCSITargetParams struct {
 	Name    string   `json:"name"`
 	Portals []Portal `json:"portals"`
+}
+
+type CreateISCSItargetPayload struct {
+	TargetSuffixName string `json:"targetSuffixName"`
+	TargetAlias string `json:"targetAlias"`
+	TargetGroupName string `json:"targetGroupName"`
+	TargetAuthenticationMode string `json:"targetAuthenticationMode"`
+	TargetChapName string `json:"targetChapName"`
+	TargetChapSecret string `json:"targetChapSecret"`
+	TargetNetworkBinding []string `json:"targetNetworkBinding"`
 }
 
 // CreateISCSITarget - create new iSCSI target on NexentaStor
@@ -1210,11 +1310,25 @@ func (p *Provider) CreateISCSITarget(params CreateISCSITargetParams) error {
 	if params.Name == "" {
 		return fmt.Errorf("Parameters 'Name' and 'Portal' are required, received: %+v", params)
 	}
-	err := p.sendRequest("/san/iscsi/targets", params)
-	if !IsAlreadyExistNefError(err) {
-		return err
+
+	bindings := []string{}
+
+	for _, portal := range params.Portals {
+		binding := fmt.Sprintf("%s:%d", portal.Address, portal.Port)
+		bindings = append(bindings, binding)
 	}
-	return nil
+
+	payload := CreateISCSItargetPayload {
+		TargetSuffixName: params.Name,
+		TargetAlias: params.Name,
+		TargetGroupName: "TODO",
+		TargetAuthenticationMode: "none",
+		TargetChapName: "",
+		TargetChapSecret: "",
+		TargetNetworkBinding: bindings,
+	}
+
+	return p.sendRequest("createISCSITarget", payload)
 }
 
 // CreateTargetGroupParams - params to create target group
@@ -1258,22 +1372,30 @@ type CreateLunMappingParams struct {
 	TargetGroup string `json:"targetGroup"`
 }
 
+type CreateLunMappingPayload struct {
+	DatasetPath string `json:"datasetPath"`
+	InitiatorGroupName string `json:"initiatorGroupName"`
+	TargetGroupName string `json:"targetGroupName"`
+	LUNNumber int `json:"LUNNumber"`
+	ReadOnly bool `json:"readOnly"`
+}
+
 // CreateLunMapping - creates lun for given volume
 func (p *Provider) CreateLunMapping(params CreateLunMappingParams) error {
 	if params.HostGroup == "" || params.Volume == "" || params.TargetGroup == "" {
 		return fmt.Errorf(
 			"Parameters 'HostGroup', 'Target' and 'TargetGroup' are required, received: %+v", params)
 	}
-	err := p.sendRequest("/san/lunMappings", params)
-	if !IsAlreadyExistNefError(err) {
-		return err
-	}
-	return nil
-}
 
-type DestroyVolumeParams struct {
-	DestroySnapshots               bool
-	PromoteMostRecentCloneIfExists bool
+	payload := CreateLunMappingPayload {
+		DatasetPath: params.Volume,
+		InitiatorGroupName: params.HostGroup,
+		TargetGroupName: params.TargetGroup,
+		LUNNumber: -1,
+		ReadOnly: false,
+	}
+
+	return p.sendRequest("createMappingForVolume", payload)
 }
 
 func (p *Provider) DestroyLunMapping(id string) error {
@@ -1286,25 +1408,30 @@ func (p *Provider) DestroyLunMapping(id string) error {
 	return p.sendRequest(uri, nil)
 }
 
-func (p *Provider) DestroyVolume(path string, params DestroyVolumeParams) error {
-	err := p.destroyVolume(path, params.DestroySnapshots)
-	if err != nil {
-		return err
-	}
-	return nil
+type DestroyVolumeParams struct {
+	DestroySnapshots               bool
+	PromoteMostRecentCloneIfExists bool
 }
 
-func (p *Provider) destroyVolume(path string, destroySnapshots bool) error {
-	if path == "" {
-		return fmt.Errorf("Filesystem path is required")
-	}
+type DestroyVolumePayload struct {
+        Path            string
+        Recursive       bool
+        ErrorIfNotFound bool
+        Promote         bool
+}
 
-	uri := p.RestClient.BuildURI(
-		fmt.Sprintf("/storage/volumes/%s", url.PathEscape(path)),
-		map[string]string{
-			"snapshots": strconv.FormatBool(destroySnapshots),
-		},
-	)
+func (p DestroyVolumePayload) MarshalJSON() ([]byte, error) {
+        list := []interface{}{p.Path, p.Recursive, p.ErrorIfNotFound, p.Promote}
+        return json.Marshal(list)
+}
 
-	return p.sendRequest(uri, nil)
+func (p *Provider) DestroyVolume(path string, params DestroyVolumeParams) error {
+	payload := DestroyVolumePayload {
+                Path:            path,
+                Recursive:       params.DestroySnapshots,
+                ErrorIfNotFound: false,
+                Promote:         params.PromoteMostRecentCloneIfExists,
+        }
+
+        return p.sendRequest("deleteVolume", payload)
 }
