@@ -15,7 +15,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const requestTimeout = 30 * time.Second
+const requestTimeout = 300 * time.Second
 
 // Client - request client for any REST API
 type Client struct {

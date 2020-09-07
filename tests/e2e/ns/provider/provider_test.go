@@ -27,7 +27,7 @@ const (
 )
 
 // count of concurrent REST calls to create filesystems on NS
-const concurrentProcesses = 1
+const concurrentProcesses = 100
 
 type config struct {
 	address      string
